@@ -1,0 +1,5 @@
+# Optional: one NSE symbol per line (no .NS suffix) to download if you have/had Yahoo history.
+# Survivors-only bias remains until delisted names with price data are listed here.
+# Examples (uncomment if you maintain CSV caches under data_cache/):
+# SATYAM
+# LAKSHMI
