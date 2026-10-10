@@ -223,6 +223,20 @@ def estimate_mcap_cr(close, mcap_now_cr, shares=None):
     return scaled
 
 
+def estimate_mcap_usd(close, mcap_now_usd, shares=None):
+    """Point-in-time market cap in USD (same logic as estimate_mcap_cr, US units)."""
+    if mcap_now_usd is None or not np.isfinite(mcap_now_usd) or mcap_now_usd <= 0:
+        return pd.Series(np.nan, index=close.index)
+    last = close.iloc[-1]
+    if not np.isfinite(last) or last <= 0:
+        return pd.Series(np.nan, index=close.index)
+    scaled = mcap_now_usd * close / last
+    if shares is not None and np.isfinite(shares) and shares > 0:
+        from_shares = shares * close
+        return pd.concat([scaled, from_shares], axis=1).min(axis=1)
+    return scaled
+
+
 # ----------------------------- DATA -----------------------------------------
 def _clean(df):
     if isinstance(df.columns, pd.MultiIndex):
@@ -320,6 +334,710 @@ def load_universe():
     return data, meta
 
 
+# ----------------------------- US UNIVERSE (Long backtest) --------------------
+# India live book: tradable ≥ ₹2,000 cr (~$240M USD at ~₹83/$). Liquidity ~₹2 cr/day (~$240k).
+US_CACHE_DIR = Path("data_cache_us")
+US_META_FILE = US_CACHE_DIR / "universe_meta_us.csv"
+# FX reference for mapping India rules → USD (update occasionally).
+INR_PER_USD = 83.0
+US_MIN_MCAP_INR_CR = MIN_MCAP_CR
+US_MIN_MCAP_USD = US_MIN_MCAP_INR_CR * 1e7 / INR_PER_USD          # ~₹2,000 cr
+US_PIT_FLOOR_USD = PIT_UNIVERSE_FLOOR_CR * 1e7 / INR_PER_USD       # ~₹500 cr
+US_MIN_TURNOVER = MIN_TURNOVER / INR_PER_USD                       # ~₹2 cr/day in USD
+US_GOLD_TICKER = "GLD"
+US_BENCH_TICKERS = ("^GSPC", "SPY")  # S&P 500
+US_TOP_LIST_FILE = US_CACHE_DIR / "us_top_by_mcap.csv"
+US_PRICE_START = "2010-01-01"
+
+
+def _yahoo_symbol_us(sym):
+    return sym.replace(".", "-").strip().upper()
+
+
+def _us_cache_file(symbol):
+    US_CACHE_DIR.mkdir(exist_ok=True)
+    safe = symbol.replace("^", "IDX_").replace("&", "_")
+    return US_CACHE_DIR / f"{safe}.csv"
+
+
+def _fetch_yahoo_meta_us(symbol):
+    import time
+    import yfinance as yf
+    time.sleep(0.25)
+    t = yf.Ticker(_yahoo_symbol_us(symbol))
+    mcap, shares = np.nan, np.nan
+    try:
+        fi = t.fast_info
+        for key in ("market_cap", "marketCap"):
+            try:
+                v = fi[key]
+                if v:
+                    mcap = float(v)
+                    break
+            except Exception:
+                pass
+        for key in ("shares", "sharesOutstanding"):
+            try:
+                v = fi[key]
+                if v:
+                    shares = float(v)
+                    break
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return mcap, shares
+
+
+def _wiki_index_symbols(url, symbol_col_hint=("Symbol", "Ticker symbol")):
+    """S&P index constituents from Wikipedia."""
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; screener/1.0)"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        html = resp.read()
+    tables = pd.read_html(html)
+    for tbl in tables:
+        cols = [c for c in tbl.columns if str(c).strip() in symbol_col_hint or "Symbol" in str(c)]
+        if not cols:
+            continue
+        col = cols[0]
+        syms = tbl[col].astype(str).str.strip()
+        syms = syms[syms.str.len() > 0]
+        out = []
+        for s in syms:
+            s = s.split("\n")[0].strip()
+            if s and s.lower() != "nan":
+                out.append(_yahoo_symbol_us(s))
+        if out:
+            return sorted(set(out))
+    return []
+
+
+def us_nasdaq_nyse_symbols():
+    """NASDAQ + NYSE/AMEX common stocks (no test issues; skip ETFs when flagged)."""
+    import urllib.request
+    urls = [
+        "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+        "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
+    ]
+    out = set()
+    for url in urls:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; screener/1.0)"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            text = resp.read().decode("utf-8", errors="ignore")
+        lines = text.strip().splitlines()
+        header = lines[0].split("|")
+        if "Symbol" in header:
+            sym_i = header.index("Symbol")
+        elif "ACT Symbol" in header:
+            sym_i = header.index("ACT Symbol")
+        else:
+            sym_i = 0
+        for line in lines[1:]:
+            if line.startswith("File Creation"):
+                continue
+            parts = line.split("|")
+            if len(parts) <= sym_i:
+                continue
+            sym = _yahoo_symbol_us(parts[sym_i])
+            if not sym or sym == "SYMBOL":
+                continue
+            if "Test Issue" in header:
+                ti = header.index("Test Issue")
+                if ti < len(parts) and parts[ti].upper() == "Y":
+                    continue
+            if "ETF" in header:
+                ei = header.index("ETF")
+                if ei < len(parts) and parts[ei].upper() == "Y":
+                    continue
+            if len(sym) > 6 or sym.endswith("W") or sym.endswith("R"):
+                continue
+            out.add(sym)
+    return sorted(out)
+
+
+def us_equity_symbol_list():
+    """S&P 500 + S&P 400 MidCap + S&P 600 SmallCap (survivorship-biased, current constituents)."""
+    syms = set()
+    try:
+        sp500 = pd.read_csv(
+            "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
+        )
+        syms.update(_yahoo_symbol_us(s) for s in sp500["Symbol"].astype(str))
+        print(f"  S&P 500 list: {len(sp500)} symbols (GitHub datasets)")
+    except Exception as e:
+        print(f"  S&P 500 GitHub list failed: {e}")
+    urls = [
+        "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
+        "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies",
+    ]
+    for url in urls:
+        try:
+            part = _wiki_index_symbols(url)
+            syms.update(part)
+            print(f"  {url.split('/')[-1]}: {len(part)} symbols")
+        except Exception as e:
+            print(f"  US list skipped ({url.split('/')[-1]}): {e}")
+    return sorted(syms)
+
+
+def get_us_universe_meta(symbols, refresh=False):
+    from concurrent.futures import ThreadPoolExecutor
+    US_CACHE_DIR.mkdir(exist_ok=True)
+    if US_META_FILE.exists():
+        cached = pd.read_csv(US_META_FILE, index_col=0)
+    else:
+        cached = pd.DataFrame(columns=["mcap_usd", "shares"])
+    for col in ("mcap_usd", "shares"):
+        if col not in cached.columns:
+            cached[col] = np.nan
+    if refresh:
+        todo = [s for s in symbols]
+    else:
+        todo = [s for s in symbols if s not in cached.index or not np.isfinite(cached.loc[s, "mcap_usd"])]
+    if todo:
+        print(f"Fetching US market cap for {len(todo)} symbols (cached in {US_META_FILE})...")
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            rows = list(ex.map(_fetch_yahoo_meta_us, todo))
+        new = pd.DataFrame(rows, index=todo, columns=["mcap_usd", "shares"])
+        cached = cached.drop(index=[s for s in todo if s in cached.index], errors="ignore")
+        cached = pd.concat([cached, new])
+        cached.to_csv(US_META_FILE)
+    return cached.reindex(symbols)
+
+
+def _us_cache_is_usable(path, start=US_PRICE_START, min_bars=100):
+    """True if cache has enough history (from `start` or IPO after that)."""
+    if not path.exists():
+        return False
+    try:
+        df = pd.read_csv(path, index_col=0, parse_dates=True)
+        if len(df) < min_bars:
+            return False
+        # Prefer files that reach back near start, but accept later IPOs with enough bars.
+        first = pd.Timestamp(df.index.min())
+        if first <= pd.Timestamp(start) + pd.Timedelta(days=30):
+            return True
+        return len(df) >= min_bars
+    except Exception:
+        return False
+
+
+def _us_cache_covers_start(path, start=US_PRICE_START):
+    return _us_cache_is_usable(path, start=start)
+
+
+def _download_one_us_stooq(symbol, start=US_PRICE_START):
+    """Fallback daily OHLCV from Stooq (symbol.US)."""
+    import urllib.request
+    ysym = _yahoo_symbol_us(symbol).lower()
+    if ysym.startswith("^"):
+        return None
+    url = f"https://stooq.com/q/d/l/?s={ysym}.us&i=d"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            text = resp.read().decode("utf-8", errors="ignore")
+        from io import StringIO
+        raw = pd.read_csv(StringIO(text))
+        if raw.empty or "Date" not in raw.columns:
+            return None
+        raw["Date"] = pd.to_datetime(raw["Date"], errors="coerce")
+        raw = raw.dropna(subset=["Date"]).set_index("Date").sort_index()
+        cols = {c: c.title() if c.lower() != "volume" else "Volume" for c in raw.columns}
+        raw = raw.rename(columns=cols)
+        need = ["Open", "High", "Low", "Close", "Volume"]
+        if not all(c in raw.columns for c in need):
+            return None
+        df = raw[need].dropna(how="all")
+        df = df.loc[df.index >= pd.Timestamp(start)]
+        return df if len(df) else None
+    except Exception:
+        return None
+
+
+def download_one_us(symbol, start=US_PRICE_START, end=END, force=False, retries=3):
+    import time
+    import yfinance as yf
+    ysym = _yahoo_symbol_us(symbol)
+    f = _us_cache_file(ysym)
+    if not force and _us_cache_is_usable(f, start):
+        return pd.read_csv(f, index_col=0, parse_dates=True)
+    last_err = None
+    for attempt in range(retries):
+        try:
+            t = yf.Ticker(ysym)
+            df = t.history(start=start, end=end, auto_adjust=True)
+            if (df is None or df.empty) and attempt == retries - 1:
+                df = yf.download(ysym, start=start, end=end, auto_adjust=True, progress=False)
+            if df is not None and not df.empty:
+                df = _clean(df)
+                if len(df):
+                    df.to_csv(f)
+                    return df
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            if "rate" in msg or "too many" in msg or "401" in msg:
+                wait = 20 * (attempt + 1)
+                print(f"    rate-limit on {ysym}, sleep {wait}s...", flush=True)
+                time.sleep(wait)
+                continue
+        time.sleep(2.0 * (attempt + 1))
+    # Stooq fallback when Yahoo is blocked / empty
+    st = _download_one_us_stooq(symbol, start=start)
+    if st is not None and len(st):
+        st.to_csv(f)
+        return st
+    if last_err:
+        print(f"    fail {ysym}: {last_err}", flush=True)
+    return None
+
+
+def download_many_us(symbols, batch=20, start=US_PRICE_START, force=False, sequential=True):
+    """Download US OHLCV. Default sequential=True to avoid Yahoo rate limits."""
+    import time
+    import yfinance as yf
+    US_CACHE_DIR.mkdir(exist_ok=True)
+    yf_syms = {s: _yahoo_symbol_us(s) for s in symbols}
+    need = []
+    for s in symbols:
+        f = _us_cache_file(yf_syms[s])
+        if force or not _us_cache_is_usable(f, start):
+            need.append(s)
+    print(f"{len(symbols) - len(need)} already cached, downloading {len(need)}...")
+    failed = []
+    if sequential and need:
+        print("  (sequential — slower, fewer Yahoo rate limits)")
+        for i, s in enumerate(need, 1):
+            if download_one_us(s, start=start, force=force) is None:
+                failed.append(s)
+            if i % 10 == 0 or i == len(need):
+                n_ok = len(list(US_CACHE_DIR.glob("*.csv")))
+                print(f"  {i}/{len(need)} this run | ~{n_ok} csv files in cache", flush=True)
+            time.sleep(2.0)
+    elif need:
+        for k in range(0, len(need), batch):
+            chunk = need[k:k + batch]
+            try:
+                raw = yf.download([yf_syms[s] for s in chunk], start=start, end=END, auto_adjust=True,
+                                  progress=False, group_by="ticker", threads=True)
+            except Exception as e:
+                print(f"  batch failed: {e}")
+                failed.extend(chunk)
+                time.sleep(5)
+                continue
+            for s in chunk:
+                y = yf_syms[s]
+                try:
+                    part = raw.copy() if len(chunk) == 1 else raw[y].copy()
+                    df = _clean(part)
+                    if len(df):
+                        df.to_csv(_us_cache_file(y))
+                    else:
+                        failed.append(s)
+                except Exception:
+                    failed.append(s)
+            print(f"  {min(k + batch, len(need))}/{len(need)}")
+            time.sleep(2)
+        if failed:
+            print(f"  Retrying {len(failed)} symbols one-by-one...")
+            for s in failed:
+                if download_one_us(s, start=start, force=True) is None:
+                    print(f"    skip {s}")
+                time.sleep(1.2)
+            failed = []
+    if failed:
+        print(f"  Failed: {len(failed)} symbols (rate limit or no data)")
+    data = {}
+    for s in symbols:
+        f = _us_cache_file(yf_syms[s])
+        if not f.exists():
+            continue
+        df = pd.read_csv(f, index_col=0, parse_dates=True)
+        if len(df) < 300:
+            continue
+        if df.Close.pct_change().abs().max() > MAX_ABS_DAILY_MOVE:
+            print(f"  dropped {s}: >{MAX_ABS_DAILY_MOVE:.0%} one-day move (likely bad data)")
+            continue
+        data[s] = df
+    print(f"Loaded {len(data)} US symbols with usable history")
+    return data
+
+
+def us_top_symbols_by_mcap(top_n=1000, refresh_mcap=False):
+    """
+    Rank US common stocks by today's Yahoo market cap; return top_n symbols + meta table.
+    Starts with S&P index lists, then scans NASDAQ/NYSE in chunks until top_n names have mcap.
+    """
+    US_CACHE_DIR.mkdir(exist_ok=True)
+    candidates = set(us_equity_symbol_list())
+    print(f"{len(candidates)} US ticker candidates (S&P 500/400/600 lists)")
+    meta = get_us_universe_meta(sorted(candidates), refresh=refresh_mcap)
+    ranked = meta.dropna(subset=["mcap_usd"]).sort_values("mcap_usd", ascending=False)
+
+    if len(ranked) < top_n:
+        have = set(ranked.index)
+        nasdaq = [s for s in us_nasdaq_nyse_symbols() if s not in have]
+        print(f"Need more names for top {top_n}: scanning NASDAQ/NYSE in batches of 400...")
+        for i in range(0, len(nasdaq), 400):
+            chunk = nasdaq[i:i + 400]
+            extra = get_us_universe_meta(chunk, refresh=True)
+            meta = pd.concat([meta, extra])
+            meta = meta[~meta.index.duplicated(keep="last")]
+            ranked = meta.dropna(subset=["mcap_usd"]).sort_values("mcap_usd", ascending=False)
+            print(f"  mcap known: {len(ranked)} (batch {i // 400 + 1})")
+            if len(ranked) >= top_n + 50:
+                break
+
+    ranked = ranked[~ranked.index.str.startswith("^") & (ranked.index != US_GOLD_TICKER)]
+    ranked = ranked[(ranked["mcap_usd"] >= 50e6) & (ranked["mcap_usd"] <= 4e12)]
+    top = ranked.head(int(top_n)).copy()
+    top["rank"] = np.arange(1, len(top) + 1)
+    top.to_csv(US_TOP_LIST_FILE)
+    print(f"Top {len(top)} by market cap saved to {US_TOP_LIST_FILE}")
+    if len(top):
+        print(f"  Largest: {top.index[0]} (${top.iloc[0]['mcap_usd']/1e9:.1f}B)  "
+              f"Smallest in list: {top.index[-1]} (${top.iloc[-1]['mcap_usd']/1e9:.2f}B)")
+    return list(top.index), top
+
+
+def download_us_top_mcap(top_n=1000, start=US_PRICE_START, force=False, refresh_mcap=False):
+    """Download adjusted daily OHLCV from `start` for the top `top_n` US stocks by market cap."""
+    syms, table = us_top_symbols_by_mcap(top_n=top_n, refresh_mcap=refresh_mcap)
+    extras = [US_GOLD_TICKER, "SPY", "^GSPC"]
+    for e in extras:
+        if e not in syms:
+            syms.append(e)
+    print(f"\nDownloading US prices from {start} for {len(syms)} symbols -> {US_CACHE_DIR}/")
+    data = download_many_us(syms, start=start, force=force, sequential=force)
+    ok = []
+    for s in syms:
+        f = _us_cache_file(_yahoo_symbol_us(s))
+        if not f.exists():
+            continue
+        try:
+            df = pd.read_csv(f, index_col=0, parse_dates=True)
+            if len(df) >= 100:
+                ok.append(s)
+        except Exception:
+            pass
+    summary = {
+        "requested_top": top_n,
+        "downloaded_ok": len(ok),
+        "start": start,
+        "cache_dir": str(US_CACHE_DIR),
+    }
+    print(f"\nDone: {len(ok)}/{len(syms)} files with history from ~{start}.")
+    return data, table, summary
+
+
+def download_us_sp1500_history(start=US_PRICE_START, force=False):
+    """Download full Yahoo history for all S&P 500/400/600 symbols (~1500 names)."""
+    symbols = sorted(set(us_equity_symbol_list()))
+    extras = [US_GOLD_TICKER, "SPY", "^GSPC"]
+    for e in extras:
+        if e not in symbols:
+            symbols.append(e)
+    print(f"Downloading {len(symbols)} S&P index names from {start} (force={force})...")
+    return download_many_us(symbols, start=start, force=force, sequential=True)
+
+
+def download_us_nasdaq_extra(extra_n=2000, start=US_PRICE_START, force=False):
+    """
+    Import more US common stocks beyond S&P 1500 from NASDAQ/NYSE directories.
+    Skips symbols already cached. Does not require market-cap ranking first.
+    """
+    have = set()
+    for p in US_CACHE_DIR.glob("*.csv"):
+        name = p.stem
+        if name.startswith("IDX_"):
+            continue
+        if name in ("universe_meta_us", "us_top_by_mcap"):
+            continue
+        have.add(name)
+    sp = set(us_equity_symbol_list())
+    nasdaq = [s for s in us_nasdaq_nyse_symbols() if s not in have and s not in sp]
+    # Prefer shorter tickers (common stocks); skip obvious warrants/units
+    nasdaq = [s for s in nasdaq if 1 <= len(s) <= 5 and "-" not in s]
+    take = nasdaq[: int(extra_n)]
+    print(f"Importing {len(take)} extra NASDAQ/NYSE names (have {len(have)} cached, "
+          f"{len(nasdaq)} candidates left)...")
+    return download_many_us(take, start=start, force=force, sequential=True)
+
+
+def import_us_prices(sp1500=True, extra_n=2000, top_n=1000, force=False, start=US_PRICE_START):
+    """
+    Broad US history import:
+      1) all S&P 500/400/600 (~1500)
+      2) next `extra_n` NASDAQ/NYSE common stocks not already cached
+      3) refresh top-`top_n` mcap list from what we have
+    """
+    _ensure_output_dirs()
+    if sp1500:
+        download_us_sp1500_history(start=start, force=force)
+    if extra_n > 0:
+        download_us_nasdaq_extra(extra_n=extra_n, start=start, force=False)
+    # Rank from cached meta + S&P list; skip full NASDAQ mcap scan if slow
+    try:
+        syms, table = us_top_symbols_by_mcap(top_n=top_n, refresh_mcap=False)
+        print(f"Top mcap list: {len(syms)} names -> {US_TOP_LIST_FILE}")
+    except Exception as e:
+        print(f"Top mcap list skipped: {e}")
+        table = None
+    n_files = len(list(US_CACHE_DIR.glob("*.csv")))
+    print(f"\nUS cache now has ~{n_files} CSV files under {US_CACHE_DIR}/")
+    return table
+
+
+def run_import_us(argv=None):
+    import sys
+    argv = list(argv if argv is not None else sys.argv[2:])
+    extra_n = 2000
+    top_n = 1000
+    force = False
+    no_sp = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--extra", "-e") and i + 1 < len(argv):
+            extra_n = int(argv[i + 1])
+            i += 2
+            continue
+        if a in ("--top", "-n") and i + 1 < len(argv):
+            top_n = int(argv[i + 1])
+            i += 2
+            continue
+        if a in ("--force", "-f"):
+            force = True
+            i += 1
+            continue
+        if a in ("--no-sp",):
+            no_sp = True
+            i += 1
+            continue
+        i += 1
+    return import_us_prices(sp1500=not no_sp, extra_n=extra_n, top_n=top_n, force=force)
+
+
+def run_download_us(argv=None):
+    import sys
+    argv = list(argv if argv is not None else sys.argv[2:])
+    top_n = 1000
+    force = False
+    refresh_mcap = False
+    sp1500_all = False
+    import_all = False
+    extra_n = 2000
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--top", "-n") and i + 1 < len(argv):
+            top_n = int(argv[i + 1])
+            i += 2
+            continue
+        if a in ("--extra", "-e") and i + 1 < len(argv):
+            extra_n = int(argv[i + 1])
+            i += 2
+            continue
+        if a in ("--force", "-f", "regenerate"):
+            force = True
+            i += 1
+            continue
+        if a in ("--refresh-mcap",):
+            refresh_mcap = True
+            i += 1
+            continue
+        if a in ("--sp1500", "--all-sp"):
+            sp1500_all = True
+            i += 1
+            continue
+        if a in ("--import", "--broad"):
+            import_all = True
+            i += 1
+            continue
+        i += 1
+    if import_all:
+        return import_us_prices(sp1500=True, extra_n=extra_n, top_n=top_n, force=force)
+    if sp1500_all:
+        download_us_sp1500_history(force=force)
+        return download_us_top_mcap(top_n=top_n, force=force, refresh_mcap=refresh_mcap)
+    return download_us_top_mcap(top_n=top_n, force=force, refresh_mcap=refresh_mcap)
+
+
+def load_us_universe(download_floor_usd=None, top_n=1000):
+    """Top US names by mcap with cached prices; PIT mcap/liquidity in add_indicators."""
+    if US_TOP_LIST_FILE.exists():
+        top_df = pd.read_csv(US_TOP_LIST_FILE, index_col=0)
+        symbols = list(top_df.index[:top_n])
+        print(f"Using {len(symbols)} symbols from {US_TOP_LIST_FILE.name}")
+    else:
+        symbols, _ = us_top_symbols_by_mcap(top_n=top_n)
+    meta = get_us_universe_meta(symbols)
+    floor = US_PIT_FLOOR_USD if download_floor_usd is None else download_floor_usd
+    by_mcap = meta["mcap_usd"].dropna()
+    download_syms = sorted(by_mcap[by_mcap >= floor].index)
+    if len(download_syms) < len(symbols) * 0.5:
+        download_syms = symbols
+    print(f"{len(download_syms)} symbols to load from cache (mcap floor ${floor/1e6:,.0f}M)")
+    data = download_many_us(download_syms, start=US_PRICE_START, force=False)
+    meta = meta.reindex(data.keys())
+    print("US universe: top-by-mcap list; survivorship bias (no delist history yet).")
+    return data, meta
+
+
+def load_us_universe_sp1500(download_floor_usd=None):
+    """US S&P 1500-ish list; PIT mcap/liquidity applied in add_indicators."""
+    symbols = us_equity_symbol_list()
+    print(f"{len(symbols)} US symbols (S&P 500/400/600 lists from Wikipedia)")
+    meta = get_us_universe_meta(symbols)
+    floor = US_PIT_FLOOR_USD if download_floor_usd is None else download_floor_usd
+    by_mcap = meta["mcap_usd"].dropna()
+    download_syms = sorted(by_mcap[by_mcap >= floor].index)
+    print(f"{len(download_syms)} symbols to download (mcap >= ${floor/1e6:,.0f}M USD, INR mapping)")
+    data = download_many_us(download_syms)
+    meta = meta.reindex(data.keys())
+    print("US universe: current S&P constituents only (survivorship bias). No US delist file yet.")
+    return data, meta
+
+
+def _load_us_sp500_close(dates=None):
+    for ticker in US_BENCH_TICKERS:
+        df = download_one_us(ticker)
+        if df is not None and len(df) >= 252:
+            s = df.Close
+            if dates is not None:
+                s = s.reindex(dates).ffill()
+            return s, ticker
+    return None, ""
+
+
+def cash_sleeve_returns_us(dates, debt_yield=0.045):
+    """US idle cash: GLD when above 200dma (lag 1d), else ~4.5% p.a. (T-bill proxy)."""
+    gold = download_one_us(US_GOLD_TICKER)
+    if gold is None or len(gold) < 252:
+        return None
+    g = gold.Close.reindex(dates).ffill()
+    gold_ret = g.pct_change().fillna(0).to_numpy()
+    gold_on = (g > g.rolling(200).mean()).shift(1).fillna(False).to_numpy()
+    debt_ret = np.full(len(dates), debt_yield / 252)
+    return np.where(gold_on, gold_ret, debt_ret).astype(float)
+
+
+def us_long_mcap_study(mcap_thresholds_usd=None):
+    """
+    Backtest live Long on US universe across mcap floors comparable to India ₹2,000 cr.
+    Saves output/studies/us_long_mcap_study.csv
+    """
+    _ensure_output_dirs()
+    if mcap_thresholds_usd is None:
+        mcap_thresholds_usd = [
+            (US_MIN_MCAP_USD, f"~INR {US_MIN_MCAP_INR_CR:,} cr (${US_MIN_MCAP_USD/1e6:.0f}M)"),
+            (500e6, "$500M"),
+            (1e9, "$1B"),
+            (2e9, "$2B"),
+            (5e9, "$5B"),
+        ]
+    data, meta = load_us_universe()
+    if not data:
+        raise SystemExit("No US price data loaded. Check network or data_cache_us/.")
+    bench, bname = _load_us_sp500_close(None)
+    ind_kw_base = dict(tradable_mcap_min=US_MIN_MCAP_USD, turnover_min=US_MIN_TURNOVER, mcap_in_usd=True)
+    tickers, P = build_panels(data, universe=meta, bench_close=bench, indicator_kw=ind_kw_base)
+    sectors = [""] * len(tickers)
+    print(f"\nBuilt panels: {len(tickers)} names | benchmark {bname}")
+
+    sp_eq = None
+    if bench is not None and len(tickers):
+        sp = bench.reindex(P["Close"].index).ffill()
+        base = sp.dropna()
+        if len(base):
+            sp_eq = sp / base.iloc[0] * INITIAL_CAPITAL
+
+    rows = []
+    windows = [
+        ("Full", {}),
+        ("2010-2018", dict(start="2010-01-01", end="2018-12-31")),
+        ("2019+", dict(start="2019-01-01")),
+    ]
+    for floor_usd, label in mcap_thresholds_usd:
+        ind_kw = dict(tradable_mcap_min=floor_usd, turnover_min=US_MIN_TURNOVER, mcap_in_usd=True)
+        t2, P2 = build_panels(data, universe=meta, bench_close=bench, indicator_kw=ind_kw)
+        kw = dict(LONG_BOOK)
+        sleeve = cash_sleeve_returns_us(P2["Close"].index)
+        if sleeve is not None:
+            kw["cash_ret"] = sleeve
+            kw["cash_ret_idle_only"] = False
+        row = {"mcap_floor": label, "mcap_usd": floor_usd, "symbols": len(t2)}
+        for wlabel, wkw in windows:
+            eq, tr = backtest(t2, P2, sectors=[""] * len(t2), **kw, **wkw)
+            st = perf_stats(eq.dropna(), "")
+            row[f"{wlabel} CAGR"] = round(st["CAGR %"], 2)
+            row[f"{wlabel} DD"] = round(st["Max DD %"], 2)
+            row[f"{wlabel} Calmar"] = round(st["Calmar"], 3)
+            if wlabel == "Full":
+                row["Final"] = round(st["Final value"])
+                row["Trades"] = len(tr)
+        rows.append(row)
+
+    if sp_eq is not None:
+        brow = {"mcap_floor": "S&P 500 B&H", "mcap_usd": np.nan, "symbols": 1}
+        for wlabel, wkw in windows:
+            sub = sp_eq.loc[sp_eq.index >= pd.Timestamp(wkw.get("start", sp_eq.index[0]))]
+            if "end" in wkw:
+                sub = sub.loc[: pd.Timestamp(wkw["end"])]
+            sub = sub.dropna()
+            if len(sub) < 2:
+                continue
+            st = perf_stats(sub, "")
+            brow[f"{wlabel} CAGR"] = round(st["CAGR %"], 2)
+            brow[f"{wlabel} DD"] = round(st["Max DD %"], 2)
+            brow[f"{wlabel} Calmar"] = round(st["Calmar"], 3)
+        rows.append(brow)
+
+    table = pd.DataFrame(rows)
+    path = OUTPUT_STUDIES / "us_long_mcap_study.csv"
+    table.to_csv(path, index=False)
+    print("\n=== US Long book — market cap floor sweep (same rules as India live Long) ===")
+    print(f"Comparable India tradable size: ₹{US_MIN_MCAP_INR_CR:,} cr ≈ ${US_MIN_MCAP_USD/1e6:.0f}M USD @ ₹{INR_PER_USD}/$")
+    print(f"Liquidity floor ≈ ${US_MIN_TURNOVER:,.0f}/day median (≈ ₹2 cr/day)\n")
+    print(table.to_string(index=False))
+    print(f"\nSaved {path}")
+    best = table[table["mcap_floor"].str.contains("INR", na=False)]
+    if not best.empty:
+        print("\nIndia-comparable floor row is the INR-labelled mcap line (not necessarily best Calmar).")
+    return table
+
+
+def run_us_long_study():
+    pd.set_option("display.width", 240)
+    return us_long_mcap_study()
+
+
+def run_us_backtest():
+    """Single US Long backtest at India-comparable mcap (~$240M USD)."""
+    _ensure_output_dirs()
+    data, meta = load_us_universe()
+    bench, bname = _load_us_sp500_close(None)
+    ind_kw = dict(tradable_mcap_min=US_MIN_MCAP_USD, turnover_min=US_MIN_TURNOVER, mcap_in_usd=True)
+    tickers, P = build_panels(data, universe=meta, bench_close=bench, indicator_kw=ind_kw)
+    sectors = [""] * len(tickers)
+    kw = dict(LONG_BOOK)
+    sleeve = cash_sleeve_returns_us(P["Close"].index)
+    if sleeve is not None:
+        kw["cash_ret"] = sleeve
+        kw["cash_ret_idle_only"] = False
+    eq, tr = backtest(tickers, P, sectors=sectors, **kw)
+    eq.to_csv(OUTPUT_BACKTEST / "equity_curve_us_long.csv", header=["equity"])
+    tr.to_csv(OUTPUT_BACKTEST / "trades_us_long.csv", index=False)
+    p = perf_stats(eq.dropna(), "US Long")
+    print(f"\nUS Long (≥${US_MIN_MCAP_USD/1e6:.0f}M mcap, {len(tickers)} names, bench {bname})")
+    print(f"  CAGR {p['CAGR %']:.1f}%  Max DD {p['Max DD %']:.1f}%  Calmar {p['Calmar']:.2f}  "
+          f"Final ${p['Final value']:,.0f}")
+    print(f"Saved output/backtest/equity_curve_us_long.csv, trades_us_long.csv")
+    return eq, tr
+
+
 # ----------------------------- INDICATORS / SIGNALS --------------------------
 def _rolling_sharpe(close, window, rf_daily=None):
     """Annualized Sharpe from daily returns over `window` sessions."""
@@ -331,8 +1049,11 @@ def _rolling_sharpe(close, window, rf_daily=None):
     return (mu - rf_daily) / sig.replace(0, np.nan) * np.sqrt(252)
 
 
-def add_indicators(df, mcap_now_cr=None, shares=None, listed_on=None):
+def add_indicators(df, mcap_now_cr=None, shares=None, listed_on=None,
+                   tradable_mcap_min=None, turnover_min=None, mcap_in_usd=False):
     d = df.copy()
+    t_mcap = MIN_MCAP_CR if tradable_mcap_min is None else tradable_mcap_min
+    t_turn = MIN_TURNOVER if turnover_min is None else turnover_min
     d["sma50"] = d.Close.rolling(50).mean()
     d["sma100"] = d.Close.rolling(100).mean()
     d["sma150"] = d.Close.rolling(150).mean()
@@ -345,16 +1066,19 @@ def add_indicators(df, mcap_now_cr=None, shares=None, listed_on=None):
     d["atr"] = tr.ewm(alpha=1 / 14, adjust=False).mean()
     d["roc126"] = d.Close.pct_change(126)
     trend = (d.Close > d.sma200) & (d.sma50 > d.sma200)
-    liquid = (d.Close * d.Volume).rolling(20).median() >= MIN_TURNOVER
+    liquid = (d.Close * d.Volume).rolling(20).median() >= t_turn
     ok = liquid
     if listed_on is not None and pd.notna(listed_on):
         cool = pd.Timestamp(listed_on) + pd.Timedelta(days=LISTING_COOLDOWN_DAYS)
         ok = ok & (d.index >= cool)
     if mcap_now_cr is not None and MCAP_MODE == "point_in_time":
-        est_mcap = estimate_mcap_cr(d.Close, mcap_now_cr, shares=shares)
-        ok = ok & (est_mcap >= MIN_MCAP_CR)
+        if mcap_in_usd:
+            est_mcap = estimate_mcap_usd(d.Close, mcap_now_cr, shares=shares)
+        else:
+            est_mcap = estimate_mcap_cr(d.Close, mcap_now_cr, shares=shares)
+        ok = ok & (est_mcap >= t_mcap)
     elif mcap_now_cr is not None and MCAP_MODE == "today":
-        ok = ok & (float(mcap_now_cr) >= MIN_MCAP_CR)
+        ok = ok & (float(mcap_now_cr) >= t_mcap)
     d["high252"] = d.Close.rolling(HIGH_WINDOW).max()
     d["prox"] = d.Close / d["high252"]
     d["prox_ath"] = d.Close / d.Close.cummax()
@@ -415,8 +1139,9 @@ def residual_momentum_panel(close, bench, lookback=252, skip=21):
     return x.rolling(n).sum() / (x.rolling(n).std() * np.sqrt(n))
 
 
-def build_panels(data, universe=None, mcaps=None, bench_close=None):
+def build_panels(data, universe=None, mcaps=None, bench_close=None, indicator_kw=None):
     """universe: DataFrame indexed by symbol with mcap_cr, shares, listing (from load_universe)."""
+    indicator_kw = indicator_kw or {}
     if universe is not None:
         meta = universe
     else:
@@ -426,12 +1151,12 @@ def build_panels(data, universe=None, mcaps=None, bench_close=None):
     for t, df in data.items():
         row = meta.loc[t] if t in meta.index else {}
         if hasattr(row, "get"):
-            m = row.get("mcap_cr", np.nan)
+            m = row.get("mcap_usd", row.get("mcap_cr", np.nan))
             sh = row.get("shares", np.nan)
             listed = row.get("listing", pd.NaT)
         else:
             m, sh, listed = np.nan, np.nan, pd.NaT
-        ind[t] = add_indicators(df, m, shares=sh, listed_on=listed)
+        ind[t] = add_indicators(df, m, shares=sh, listed_on=listed, **indicator_kw)
     tickers = list(ind)
     panel = lambda col: pd.DataFrame({t: ind[t][col] for t in tickers}).sort_index()
     entry_cols = ["entry_long", "entry_long90", "entry_long95", "entry_long_s126", "entry_long_vol",
@@ -643,8 +1368,12 @@ Usage:
   python main.py live            Next Long buy list -> output/live/long_next_buys.csv
   python main.py live --fresh    Same, assuming empty 15-slot book
 
+  python main.py backtest-us       US Long backtest (top mcap list, ~$240M floor)
+  python main.py download-us       Top 1000 US by mcap, Yahoo history from 2010
+  python main.py import-us         S&P 1500 + 2000 more NASDAQ/NYSE (fill missing, from 2010)
+  python main.py import-us --extra 3000   # even more names
 Research (optional, -> output/studies/):
-  python main.py study rank | entry | validate | atr | compare | universe | regime | sep2024
+  python main.py study rank | entry | validate | atr | compare | universe | regime | us | sep2024
 
 Full strategy grid + breakout sweep (slow):
   python main.py full
@@ -3089,6 +3818,15 @@ if __name__ == "__main__":
         run_long_next()
     elif cmd == "full":
         main()
+    elif cmd in ("backtest-us", "us-backtest"):
+        run_us_backtest()
+    elif cmd in ("download-us", "us-download"):
+        run_download_us(sys.argv[2:])
+    elif cmd in ("import-us", "us-import"):
+        run_import_us(sys.argv[2:])
+    elif cmd == "regenerate-us":
+        # Fill gaps (no force): S&P 1500 + extra NASDAQ, then top-mcap list
+        run_import_us(["--extra", "2000"] + sys.argv[2:])
     elif cmd == "study" and len(sys.argv) > 2:
         sub = sys.argv[2]
         if sub == "rank":
@@ -3112,6 +3850,8 @@ if __name__ == "__main__":
             write_trades_from_sep2024(path=str(OUTPUT_STUDIES / "TRADES_FROM_SEP2024.md"))
         elif sub in ("regime", "regime-cash", "gold-regime"):
             run_regime_cash_study()
+        elif sub in ("us", "us-long", "us-mcap"):
+            run_us_long_study()
         else:
             cli_help()
     # Legacy flags (same as above)
