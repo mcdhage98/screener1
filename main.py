@@ -1,12 +1,11 @@
 """
-Monthly Long book: data download + portfolio backtest (NSE stocks, 2010 onwards)
+Monthly Long book: data download + portfolio backtest (India, 2000 onwards)
+
+Live defaults (mcap-grid study): top 800 by today's mcap among ≥ ₹2,000 cr,
+10 slots, industry cap 3. See LONG_STRATEGY.md / RUN.md.
 
 Setup:   pip install yfinance pandas numpy matplotlib
-         pip install nsepython   # optional: python main.py check-data
-Run:     python main.py backtest   |   python main.py live   (see RUN.md)
-
-Long book (live): month-end signals; orders at the next open (no look-ahead). See LONG_STRATEGY.md.
-Optional `python main.py full` also runs breakout reference strategies (not live).
+Run:     python main.py download | python main.py fix-data | python main.py backtest | live
 """
 
 from pathlib import Path
@@ -14,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 # ----------------------------- CONFIG ---------------------------------------
-START = "2010-01-01"
+START = "2000-01-01"
 END = None                      # None = today
 BENCHMARK = "^NSEI"             # Nifty 50 index
 CACHE_DIR = Path("data_cache")
@@ -22,28 +21,74 @@ OUTPUT_BACKTEST = Path("output/backtest")
 OUTPUT_LIVE = Path("output/live")
 OUTPUT_STUDIES = Path("output/studies")
 
+# Data source mode (prices + mcap meta):
+#   "cache" — local CSVs only (default for live / backtest / study)
+#   "sync"  — use cache when present; Yahoo only for missing / unusable files
+#   "force" — re-download from Yahoo (ignore usable cache)
+DATA_MODE = "cache"
+_DATA_MODE_CACHE = frozenset({"cache", "cached", "cache-only", "offline"})
+_DATA_MODE_SYNC = frozenset({"sync", "yahoo", "from-yahoo", "pull"})
+_DATA_MODE_FORCE = frozenset({"force", "resync", "refresh"})
+
+
+def set_data_mode(mode="cache"):
+    """Set global DATA_MODE to cache | sync | force."""
+    global DATA_MODE
+    m = str(mode).strip().lower().lstrip("-")
+    if m in _DATA_MODE_FORCE or m in ("f",):
+        DATA_MODE = "force"
+    elif m in _DATA_MODE_SYNC:
+        DATA_MODE = "sync"
+    else:
+        DATA_MODE = "cache"
+    return DATA_MODE
+
+
+def parse_data_mode(argv, default="cache"):
+    """
+    Parse CLI data-source flags from argv.
+      --cache / --cached / --cache-only  → cache (local only)
+      --sync / --yahoo / --from-yahoo    → sync (fill gaps from Yahoo)
+      --force / -f / --resync            → force (re-pull everything)
+    """
+    argv = list(argv or [])
+    mode = default
+    if any(a in argv for a in ("--force", "-f", "--resync")):
+        mode = "force"
+    elif any(a in argv for a in ("--sync", "--yahoo", "--from-yahoo", "--refresh-mcap")):
+        mode = "sync"
+    elif any(a in argv for a in ("--cache", "--cached", "--cache-only", "--offline")):
+        mode = "cache"
+    return set_data_mode(mode)
+
 
 def _ensure_output_dirs():
     for d in (OUTPUT_BACKTEST, OUTPUT_LIVE, OUTPUT_STUDIES):
         d.mkdir(parents=True, exist_ok=True)
 
-# --- Universe ---
-MIN_MCAP_CR = 2000              # tradable only when ESTIMATED mcap on that date >= this (INR crore)
+# --- Universe (live India book) ---
+# Chosen from study-mcap-grid --from-2000: top 800 by today's mcap among ≥ ₹2,000 cr,
+# 10 slots, sector_cap 3 (most stable across starts; beats Nifty-500-only / 15-slot book).
+MIN_MCAP_CR = 2000              # floor; tradable only when ESTIMATED mcap on that date >= this
+LIVE_UNIVERSE_TOP_N = 800       # keep largest N names by today's mcap among the floor set
 # "point_in_time": tradable when est. mcap + liquidity + listing cooldown pass (see estimate_mcap_cr)
 # "today":         stocks with mcap >= MIN_MCAP_CR today are tradable for all history (upper-bound bias)
 MCAP_MODE = "point_in_time"
-# Download price history for symbols with current mcap >= this (can be below MIN_MCAP_CR so names that
-# later grew into the book are not missing). Delisted/extra symbols in delisted_symbols.txt are always tried.
-PIT_UNIVERSE_FLOOR_CR = 500
+PIT_UNIVERSE_FLOOR_CR = 500     # legacy floor (kept for US mapping)
 LISTING_COOLDOWN_DAYS = 126     # no entries until this many calendar days after NSE listing date
-DELISTED_SYMBOLS_FILE = Path("delisted_symbols.txt")  # optional, one NSE symbol per line (no .NS)
+DELISTED_SYMBOLS_FILE = Path("delisted_symbols.txt")  # optional extras (merged/delisted) to also download
 MIN_TURNOVER = 2e7              # INR 2 crore: 20-day median daily traded value needed to enter (liquidity)
-MAX_ABS_DAILY_MOVE = 0.60       # drop symbols with a >60% one-day move (usually bad Yahoo data)
+MAX_ABS_DAILY_MOVE = 0.60       # drop symbol if a >60% one-day move remains after repair
+SPIKE_REPAIR_MOVE = 0.35        # null day t when |r_t| exceeds this and next day reverts
+SPIKE_REVERT_MAX = 0.08         # |(1+r_t)*(1+r_{t+1})-1| below this => treat as spike-and-revert
+ISOLATED_SPIKE_MOVE = 0.50      # null isolated bar if |r_t| exceeds this and neighbors look normal
+MIN_BARS = 300                  # minimum history to keep a symbol
+CACHE_START_SLACK_DAYS = 30     # cache is stale if first bar is later than START + this (and listing allows)
 
 # --- Strategy / portfolio ---
 INITIAL_CAPITAL = 1_000_000     # INR
 MAX_POSITIONS = 10              # breakout reference book only
-LONG_POSITIONS = 15             # monthly book: one fifteenth of equity each
+LONG_POSITIONS = 10             # monthly live book: equal-weight tenths of equity
 RISK_PER_TRADE = 0.01           # 1% of equity risked per trade
 MAX_WEIGHT = 0.15               # no position above 15% of equity
 ATR_MULT = 3.0                  # trailing stop distance in ATRs
@@ -84,6 +129,8 @@ COST_PER_SIDE = 0.0015          # 0.15% per side: brokerage + STT/charges + slip
 RISK_FREE = 0.06                # for Sharpe
 
 NSE_LIST_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+NIFTY500_LIST_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv"
+NIFTY500_LIST_FILE = Path("ind_nifty500list.csv")
 
 
 # ----------------------------- UNIVERSE --------------------------------------
@@ -111,8 +158,47 @@ def _read_equity_l():
     return df
 
 
+def _read_nifty500_list(refresh=False):
+    """Today's Nifty 500 constituents from NSE archives (cached as ind_nifty500list.csv)."""
+    local = NIFTY500_LIST_FILE
+    if refresh or not local.exists():
+        import requests
+        try:
+            r = requests.get(NIFTY500_LIST_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+            r.raise_for_status()
+            local.write_bytes(r.content)
+        except Exception as e:
+            if local.exists():
+                print(f"Warning: could not refresh Nifty 500 list ({e}); using cached {local}")
+            else:
+                raise SystemExit(
+                    f"Could not download the Nifty 500 list ({e}).\n"
+                    f"Download it manually from {NIFTY500_LIST_URL} and save as {local.name}.")
+    df = pd.read_csv(local)
+    df.columns = df.columns.str.strip()
+    sym_col = next((c for c in df.columns if c.upper() == "SYMBOL"), None)
+    if sym_col is None:
+        raise SystemExit(f"{local} has no Symbol column: {list(df.columns)}")
+    df["SYMBOL"] = df[sym_col].astype(str).str.strip()
+    series_col = next((c for c in df.columns if c.upper() == "SERIES"), None)
+    if series_col is not None:
+        df = df[df[series_col].astype(str).str.strip().isin(["EQ", "BE", "BZ", ""]) | df[series_col].isna()]
+    return df
+
+
+def get_nifty500_symbols(refresh=False):
+    """Symbols in today's Nifty 500 index list (skips NSE dummy/test rows)."""
+    df = _read_nifty500_list(refresh=refresh)
+    isin_col = next((c for c in df.columns if "ISIN" in c.upper()), None)
+    mask = ~df["SYMBOL"].str.upper().str.startswith("DUMMY")
+    if isin_col is not None:
+        isin = df[isin_col].astype(str).str.upper()
+        mask &= ~isin.str.startswith("DUM")
+    return sorted(df.loc[mask, "SYMBOL"].unique())
+
+
 def get_nse_symbols():
-    """All NSE EQ symbols from EQUITY_L.csv."""
+    """All NSE EQ symbols from EQUITY_L.csv (listing metadata / optional extras)."""
     return sorted(_read_equity_l()["SYMBOL"].unique())
 
 
@@ -165,8 +251,14 @@ def _fetch_yahoo_meta(symbol):
     return mcap, shares
 
 
-def get_universe_meta(symbols, refresh=False):
-    """Per-symbol mcap (₹ cr), shares, listing date. Cached in data_cache/universe_meta.csv."""
+def get_universe_meta(symbols, refresh=False, fetch_missing=None):
+    """Per-symbol mcap (₹ cr), shares, listing date. Cached in data_cache/universe_meta.csv.
+
+    Respects DATA_MODE unless overridden:
+      cache → CSV only
+      sync  → Yahoo for symbols missing mcap
+      force / refresh=True → Yahoo for missing (and rewrite cache)
+    """
     from concurrent.futures import ThreadPoolExecutor
     CACHE_DIR.mkdir(exist_ok=True)
     f = CACHE_DIR / "universe_meta.csv"
@@ -184,8 +276,11 @@ def get_universe_meta(symbols, refresh=False):
     else:
         cached = pd.DataFrame(index=symbols, columns=["mcap_cr", "shares"], dtype=float)
     todo = [s for s in symbols if s not in cached.index or not np.isfinite(cached.loc[s, "mcap_cr"])]
-    if todo:
-        print(f"Fetching market cap / shares for {len(todo)} symbols (cached in universe_meta.csv)...")
+    if fetch_missing is None:
+        fetch_missing = bool(refresh) or DATA_MODE in ("sync", "force")
+    if todo and fetch_missing:
+        print(f"Fetching market cap / shares for {len(todo)} symbols via Yahoo "
+              f"(mode={DATA_MODE})...")
         with ThreadPoolExecutor(max_workers=8) as ex:
             rows = list(ex.map(_fetch_yahoo_meta, todo))
         new = pd.DataFrame(
@@ -195,6 +290,9 @@ def get_universe_meta(symbols, refresh=False):
         cached = cached.drop(index=[s for s in todo if s in cached.index], errors="ignore")
         cached = pd.concat([cached, new])
         cached.to_csv(f)
+    elif todo:
+        print(f"Meta cache-only: {len(todo)} symbols missing mcap "
+              f"(use --sync / --yahoo to pull)")
     meta = cached.reindex(symbols)
     meta["listing"] = listing.values
     return meta
@@ -241,97 +339,925 @@ def estimate_mcap_usd(close, mcap_now_usd, shares=None):
 def _clean(df):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    need = ["Open", "High", "Low", "Close", "Volume"]
+    missing = [c for c in need if c not in df.columns]
+    if missing:
+        return pd.DataFrame(columns=need)
+    df = df[need].copy()
     df.index = pd.to_datetime(df.index).tz_localize(None)
-    return df[~df.index.duplicated()].sort_index()
+    df = df[~df.index.duplicated()].sort_index()
+    return df
+
+
+def fix_ohlcv(df, spike_move=SPIKE_REPAIR_MOVE, revert_max=SPIKE_REVERT_MAX,
+              isolated_move=ISOLATED_SPIKE_MOVE, drop_move=MAX_ABS_DAILY_MOVE,
+              junk_gap_days=60):
+    """
+    Post-Yahoo cleanup: drop zero-volume bars, OHLC clamp, spike-and-revert nulling,
+    isolated spike nulling. Non-reverting mega-gaps: trim only after a long calendar
+    hole (junk early history); otherwise back-adjust the prefix (demerger / missed adjust).
+    Returns (cleaned_df, stats_dict).
+    """
+    stats = {
+        "bars_nulled": 0, "ohlc_clamped": 0, "rows_bad_price": 0,
+        "zero_vol_dropped": 0, "history_trimmed": 0, "history_backadjusted": 0,
+    }
+    if df is None or df.empty:
+        return df, stats
+    out = _clean(df)
+    if out.empty:
+        return out, stats
+
+    px = out[["Open", "High", "Low", "Close"]]
+    bad = (px <= 0).any(axis=1) | px.isna().any(axis=1)
+    stats["rows_bad_price"] = int(bad.sum())
+    out = out.loc[~bad].copy()
+    if out.empty:
+        return out, stats
+
+    zv = out["Volume"].fillna(0) <= 0
+    stats["zero_vol_dropped"] = int(zv.sum())
+    out = out.loc[~zv].copy()
+    if out.empty:
+        return out, stats
+
+    hi = out[["Open", "Close", "High"]].max(axis=1)
+    lo = out[["Open", "Close", "Low"]].min(axis=1)
+    clamp = (out["High"] < hi) | (out["Low"] > lo)
+    stats["ohlc_clamped"] = int(clamp.sum())
+    out["High"] = hi
+    out["Low"] = lo
+
+    close = out["Close"].astype(float)
+    ret = close.pct_change()
+    null_mask = pd.Series(False, index=out.index)
+    # Spike day t that mostly reverts on t+1 → null day t
+    for i in range(1, len(out) - 1):
+        r0 = ret.iloc[i]
+        r1 = ret.iloc[i + 1]
+        if not (np.isfinite(r0) and np.isfinite(r1)):
+            continue
+        if abs(r0) < spike_move:
+            continue
+        two_day = (1.0 + r0) * (1.0 + r1) - 1.0
+        if abs(two_day) <= revert_max:
+            null_mask.iloc[i] = True
+    # Isolated extreme spike with calm neighbors
+    for i in range(1, len(out) - 1):
+        if null_mask.iloc[i]:
+            continue
+        r0 = ret.iloc[i]
+        if not np.isfinite(r0) or abs(r0) < isolated_move:
+            continue
+        prev_r = ret.iloc[i - 1] if i > 0 else np.nan
+        next_r = ret.iloc[i + 1]
+        calm_prev = (not np.isfinite(prev_r)) or abs(prev_r) < spike_move * 0.5
+        calm_next = (not np.isfinite(next_r)) or abs(next_r) < spike_move * 0.5
+        if calm_prev and calm_next:
+            null_mask.iloc[i] = True
+
+    stats["bars_nulled"] = int(null_mask.sum())
+    if null_mask.any():
+        out.loc[null_mask, ["Open", "High", "Low", "Close", "Volume"]] = np.nan
+        out = out.dropna(subset=["Open", "High", "Low", "Close"]).copy()
+
+    # Non-reverting mega-gaps: trim junk prefix after long calendar holes; else back-adjust
+    trimmed = 0
+    backadjusted = 0
+    guard = 0
+    while len(out) > 2 and guard < 8:
+        guard += 1
+        ret = out["Close"].astype(float).pct_change()
+        mx = float(ret.abs().max()) if len(ret) else 0.0
+        if not np.isfinite(mx) or mx <= drop_move:
+            break
+        i = int(np.nanargmax(ret.abs().to_numpy()))
+        if i <= 0:
+            break
+        r0 = float(ret.iloc[i])
+        r1 = float(ret.iloc[i + 1]) if i + 1 < len(out) else np.nan
+        two_day = (1.0 + r0) * (1.0 + r1) - 1.0 if np.isfinite(r1) else np.nan
+        if np.isfinite(two_day) and abs(two_day) <= revert_max:
+            out = out.drop(out.index[i]).copy()
+            trimmed += 1
+            continue
+        gap_days = (out.index[i] - out.index[i - 1]).days
+        prev_close = float(out["Close"].iloc[i - 1])
+        open_i = float(out["Open"].iloc[i])
+        if not (np.isfinite(prev_close) and prev_close > 0):
+            break
+        # Long hole before the jump → unusable early Yahoo stub; keep from gap bar
+        if gap_days >= junk_gap_days:
+            trimmed += i
+            out = out.iloc[i:].copy()
+            continue
+        # Demerger / missed corporate adjust: scale prefix so the gap disappears
+        factor = open_i / prev_close if np.isfinite(open_i) and open_i > 0 else float(out["Close"].iloc[i]) / prev_close
+        if not np.isfinite(factor) or factor <= 0:
+            break
+        cols = ["Open", "High", "Low", "Close"]
+        out.loc[out.index[:i], cols] = out.loc[out.index[:i], cols].to_numpy() * factor
+        backadjusted += 1
+    stats["history_trimmed"] = trimmed
+    stats["history_backadjusted"] = backadjusted
+    return out, stats
 
 
 def _cache_file(symbol):
     return CACHE_DIR / (symbol.replace("^", "IDX_").replace("&", "_") + ".csv")
 
 
-def download_one(symbol, start=START, end=END):
-    """Single symbol (used for the benchmark). Cached as CSV."""
+def _yf_equity(symbol):
+    """Map bare NSE symbol or index ticker to Yahoo symbol used in cache filenames."""
+    if symbol.startswith("^") or symbol.endswith(".NS") or symbol.endswith(".BO"):
+        return symbol
+    return symbol + ".NS"
+
+
+def _cache_first_date(path):
+    try:
+        idx = pd.read_csv(path, usecols=[0], index_col=0, parse_dates=True).index
+        if len(idx) == 0:
+            return None
+        return pd.Timestamp(idx.min()).tz_localize(None)
+    except Exception:
+        return None
+
+
+def _india_cache_is_usable(path, start=START, listing=None, min_bars=MIN_BARS):
+    """True if cache CSV is good enough to skip Yahoo.
+
+    Rules:
+    - File must exist with >= min_bars.
+    - If listing date is known: first bar should reach max(start, listing) (± slack).
+      Used to detect truncated caches that need a deeper re-download.
+    - If listing is unknown: trust any adequate cache. Requiring START=2000 for
+      post-IPO names with no listing caused endless re-downloads of the same CSVs.
+    Use force=True to refresh regardless.
+    """
+    if not path.exists():
+        return False
+    try:
+        df = pd.read_csv(path, index_col=0, parse_dates=True)
+    except Exception:
+        return False
+    if len(df) < min_bars:
+        return False
+    first = pd.Timestamp(df.index.min()).tz_localize(None)
+    if listing is None or (isinstance(listing, float) and not np.isfinite(listing)) or pd.isna(listing):
+        return True
+    start_ts = pd.Timestamp(start)
+    slack = pd.Timedelta(days=CACHE_START_SLACK_DAYS)
+    expect = max(start_ts, pd.Timestamp(listing))
+    return first <= expect + slack
+
+
+def _yf_download_ohlcv(ysym, start=START, end=END):
+    """Yahoo download with repair=True; fall back to repair=False on Yahoo bugs.
+
+    yfinance often prints a false 'Failed download' / IntCastingNaNError for Indian
+    names when repair=True; stderr is silenced and we retry without repair.
+    """
     import yfinance as yf
+    import warnings
+    import os
+    from contextlib import redirect_stderr
+    from io import StringIO
+
+    def _one(repair):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with open(os.devnull, "w") as devnull, redirect_stderr(devnull):
+                try:
+                    return yf.download(
+                        ysym, start=start, end=end, auto_adjust=True, repair=repair,
+                        progress=False,
+                    )
+                except Exception:
+                    return None
+
+    df = _one(True)
+    if df is None or df.empty:
+        df = _one(False)
+    return df
+
+
+def download_one(symbol, start=START, end=END, force=False, listing=None):
+    """Single symbol (equities use .NS suffix; indices like ^NSEI as-is). Cached as CSV.
+
+    Honours DATA_MODE: cache → never Yahoo; sync → Yahoo only if unusable;
+    force / force=True → always Yahoo.
+    """
     CACHE_DIR.mkdir(exist_ok=True)
-    f = _cache_file(symbol)
-    if f.exists():
-        return pd.read_csv(f, index_col=0, parse_dates=True)
-    df = yf.download(symbol, start=start, end=end, auto_adjust=True, progress=False)
+    ysym = _yf_equity(symbol)
+    f = _cache_file(ysym)
+    do_force = force or DATA_MODE == "force"
+    if not do_force and f.exists():
+        # Prefer any adequate local file in cache/sync before hitting Yahoo
+        if DATA_MODE == "cache" or _india_cache_is_usable(f, start=start, listing=listing):
+            try:
+                df = pd.read_csv(f, index_col=0, parse_dates=True)
+                if len(df) >= MIN_BARS or DATA_MODE == "cache":
+                    return df if len(df) else None
+            except Exception:
+                if DATA_MODE == "cache":
+                    return None
+    if DATA_MODE == "cache" and not do_force:
+        return None
+    df = _yf_download_ohlcv(ysym, start=start, end=end)
+    if df is None or df.empty:
+        # Fall back to whatever is on disk
+        if f.exists():
+            try:
+                return pd.read_csv(f, index_col=0, parse_dates=True)
+            except Exception:
+                return None
+        return None
+    df, _ = fix_ohlcv(df)
     if df is None or df.empty:
         return None
-    df = _clean(df)
     df.to_csv(f)
     return df
 
 
-def download_many(symbols, batch=40):
-    """Download adjusted daily OHLCV for many NSE symbols in batches; cached per symbol."""
+def download_many(symbols, batch=20, start=START, end=END, force=False, listings=None,
+                  sequential=True):
+    """
+    Download adjusted daily OHLCV for NSE symbols with yfinance repair=True,
+    then custom fix_ohlcv. Cached per symbol as SYMBOL.NS.csv.
+    Respects DATA_MODE (cache / sync / force).
+    """
     import yfinance as yf
     CACHE_DIR.mkdir(exist_ok=True)
-    yf_syms = {s: s + ".NS" for s in symbols}
-    need = [s for s in symbols if not _cache_file(yf_syms[s]).exists()]
-    print(f"{len(symbols) - len(need)} cached, downloading {len(need)}...")
-    for k in range(0, len(need), batch):
-        chunk = need[k:k + batch]
+    _ensure_output_dirs()
+    listings = listings if listings is not None else {}
+    yf_syms = {s: _yf_equity(s) for s in symbols}
+    do_force = force or DATA_MODE == "force"
+    if DATA_MODE == "cache" and not do_force:
+        print(f"Data mode=cache: loading {len(symbols)} symbols from disk (no Yahoo)")
+        return _load_cached_ohlcv(symbols, listings=listings)
+    need = []
+    for s in symbols:
+        f = _cache_file(yf_syms[s])
+        if do_force or not _india_cache_is_usable(f, start=start, listing=listings.get(s)):
+            need.append(s)
+    print(f"{len(symbols) - len(need)} cached OK, downloading {len(need)} "
+          f"(start={start}, repair=True, mode={DATA_MODE}, force={do_force})...")
+
+    repair_rows = []
+
+    def _save_fixed(s, raw_df):
         try:
-            raw = yf.download([yf_syms[s] for s in chunk], start=START, end=END, auto_adjust=True,
-                              progress=False, group_by="ticker", threads=True)
+            df, stats = fix_ohlcv(raw_df)
+            if df is None or df.empty:
+                repair_rows.append({"symbol": s, "bars_nulled": stats.get("bars_nulled", 0),
+                                    "ohlc_clamped": stats.get("ohlc_clamped", 0),
+                                    "status": "empty_after_fix"})
+                return
+            df.to_csv(_cache_file(yf_syms[s]))
+            repair_rows.append({"symbol": s, "bars_nulled": stats["bars_nulled"],
+                                "ohlc_clamped": stats["ohlc_clamped"], "status": "ok"})
         except Exception as e:
-            print(f"  batch failed: {e}")
-            continue
-        for s in chunk:
+            repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
+                                "status": f"fix_error:{e}"})
+
+    if sequential:
+        for i, s in enumerate(need, 1):
             try:
-                df = _clean(raw[yf_syms[s]].copy())
-                if len(df):
-                    df.to_csv(_cache_file(yf_syms[s]))
-            except Exception:
-                pass
-        print(f"  {min(k + batch, len(need))}/{len(need)}")
+                raw = _yf_download_ohlcv(yf_syms[s], start=start, end=end)
+                if raw is None or raw.empty:
+                    repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
+                                        "status": "download_empty"})
+                else:
+                    _save_fixed(s, raw)
+            except Exception as e:
+                repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
+                                    "status": f"download_error:{e}"})
+            if i % 25 == 0 or i == len(need):
+                print(f"  {i}/{len(need)}", flush=True)
+    else:
+        for k in range(0, len(need), batch):
+            chunk = need[k:k + batch]
+            try:
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    raw = yf.download(
+                        [yf_syms[s] for s in chunk], start=start, end=end, auto_adjust=True,
+                        repair=True, progress=False, group_by="ticker", threads=True,
+                    )
+            except Exception as e:
+                print(f"  batch failed: {e}", flush=True)
+                continue
+            for s in chunk:
+                try:
+                    piece = raw[yf_syms[s]].copy() if len(chunk) > 1 else raw.copy()
+                    if piece is None or piece.empty:
+                        piece = _yf_download_ohlcv(yf_syms[s], start=start, end=end)
+                    _save_fixed(s, piece)
+                except Exception as e:
+                    repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
+                                        "status": f"parse_error:{e}"})
+            print(f"  {min(k + batch, len(need))}/{len(need)}", flush=True)
+
     data = {}
     for s in symbols:
         f = _cache_file(yf_syms[s])
         if not f.exists():
+            repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
+                                "status": "missing_cache"})
             continue
         df = pd.read_csv(f, index_col=0, parse_dates=True)
-        if len(df) < 300:
+        if len(df) < MIN_BARS:
+            repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
+                                "status": f"too_short:{len(df)}"})
             continue
-        if df.Close.pct_change().abs().max() > MAX_ABS_DAILY_MOVE:
-            print(f"  dropped {s}: >{MAX_ABS_DAILY_MOVE:.0%} one-day move (likely bad data)")
+        mx = df.Close.pct_change().abs().max()
+        if np.isfinite(mx) and mx > MAX_ABS_DAILY_MOVE:
+            print(f"  dropped {s}: >{MAX_ABS_DAILY_MOVE:.0%} one-day move after repair (max={mx:.0%})")
+            repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
+                                "status": f"dropped_spike:{mx:.2%}"})
             continue
         data[s] = df
+
+    if repair_rows:
+        rep = pd.DataFrame(repair_rows).drop_duplicates("symbol", keep="last")
+        rep_path = OUTPUT_STUDIES / "nifty500_data_repair_report.csv"
+        rep.to_csv(rep_path, index=False)
+        print(f"Repair report -> {rep_path} ({len(rep)} rows)")
     print(f"Loaded {len(data)} symbols with usable history")
     return data
 
 
-def load_universe():
+def fix_cached_symbols(symbols, listings=None):
+    """Re-run fix_ohlcv on existing cache files; rewrite CSVs; return loadable data dict."""
+    _ensure_output_dirs()
+    listings = listings if listings is not None else {}
+    repair_rows = []
+    data = {}
+    for s in symbols:
+        ysym = _yf_equity(s)
+        f = _cache_file(ysym)
+        if not f.exists():
+            repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
+                                "status": "missing_cache"})
+            continue
+        raw = pd.read_csv(f, index_col=0, parse_dates=True)
+        df, stats = fix_ohlcv(raw)
+        if df is None or df.empty or len(df) < MIN_BARS:
+            repair_rows.append({"symbol": s, "bars_nulled": stats.get("bars_nulled", 0),
+                                "ohlc_clamped": stats.get("ohlc_clamped", 0),
+                                "status": "empty_or_short_after_fix"})
+            continue
+        df.to_csv(f)
+        mx = df.Close.pct_change().abs().max()
+        if np.isfinite(mx) and mx > MAX_ABS_DAILY_MOVE:
+            repair_rows.append({"symbol": s, "bars_nulled": stats["bars_nulled"],
+                                "ohlc_clamped": stats["ohlc_clamped"],
+                                "status": f"dropped_spike:{mx:.2%}"})
+            print(f"  dropped {s}: >{MAX_ABS_DAILY_MOVE:.0%} one-day move after fix (max={mx:.0%})")
+            continue
+        repair_rows.append({"symbol": s, "bars_nulled": stats["bars_nulled"],
+                            "ohlc_clamped": stats["ohlc_clamped"], "status": "ok"})
+        data[s] = df
+    rep = pd.DataFrame(repair_rows)
+    rep_path = OUTPUT_STUDIES / "nifty500_data_repair_report.csv"
+    rep.to_csv(rep_path, index=False)
+    print(f"Fixed {len(data)}/{len(symbols)} symbols; report -> {rep_path}")
+    return data
+
+
+def load_universe(force=False, refresh_list=False, cache_only=None, data_mode=None):
     """
-    Download OHLCV for NSE EQ (+ optional delisted_symbols.txt).
-    Returns (data, universe_meta DataFrame: mcap_cr, shares, listing).
-    Tradable size filter (MIN_MCAP_CR) is applied later in add_indicators, not at download time.
+    Live India universe: top LIVE_UNIVERSE_TOP_N by today's mcap among ≥ MIN_MCAP_CR
+    (+ optional delisted_symbols.txt). Returns (data, universe_meta).
+
+    data_mode / DATA_MODE: cache | sync | force (see parse_data_mode).
+    Legacy: force=True → force; cache_only=True → cache; cache_only=False → sync.
     """
-    eq = _read_equity_l()
-    symbols = sorted(eq["SYMBOL"].unique())
+    if data_mode is not None:
+        set_data_mode(data_mode)
+    elif force:
+        set_data_mode("force")
+    elif cache_only is True:
+        set_data_mode("cache")
+    elif cache_only is False:
+        set_data_mode("sync")
+    # else keep current DATA_MODE
+    print(f"Data mode: {DATA_MODE}")
+    data, meta, _ranked = load_mcap_floor_universe(
+        min_mcap_cr=MIN_MCAP_CR,
+        top_n=LIVE_UNIVERSE_TOP_N,
+        force=(DATA_MODE == "force"),
+        cache_only=(DATA_MODE == "cache"),
+    )
     extra = load_delisted_symbol_list()
     if extra:
-        print(f"Extra delisted / manual symbols: {len(extra)}")
-    symbols = sorted(set(symbols) | set(extra))
-    print(f"{len(symbols)} NSE EQ-series symbols (+ extras)")
-    meta = get_universe_meta(symbols)
-    if MCAP_MODE == "today":
-        dl_floor = MIN_MCAP_CR
-    else:
-        dl_floor = PIT_UNIVERSE_FLOOR_CR
-    by_mcap = meta["mcap_cr"].dropna()
-    download_syms = set(by_mcap[by_mcap >= dl_floor].index)
-    download_syms.update(extra)
-    print(f"{len(download_syms)} symbols to download (mcap >= {dl_floor:,.0f} cr and/or delisted list)")
-    data = download_many(sorted(download_syms))
-    meta = meta.reindex(list(data))
-    print(f"Universe bias: survivors only (no full NSE delist history). "
-          f"PIT mcap uses price-scaled cap + listing dates from EQUITY_L; "
-          f"add delisted tickers to {DELISTED_SYMBOLS_FILE.name} if you have price files.")
+        missing = [s for s in extra if s not in data]
+        if missing:
+            print(f"Extra delisted / manual symbols: {len(missing)}")
+            listings = {}
+            eq = _read_equity_l().set_index("SYMBOL")
+            for s in missing:
+                if s in eq.index:
+                    listings[s] = eq.loc[s, "listing"]
+            if DATA_MODE == "force":
+                more = download_many(missing, start=START, force=True, listings=listings, sequential=True)
+            elif DATA_MODE == "cache":
+                more = _load_cached_ohlcv(missing, listings=listings)
+            else:
+                more = download_many(missing, start=START, force=False, listings=listings, sequential=True)
+            data.update(more)
+            if len(more):
+                extra_meta = get_universe_meta(list(more))
+                meta = pd.concat([meta, extra_meta.reindex(list(more))]).loc[
+                    lambda m: ~m.index.duplicated(keep="first")
+                ]
+    print(
+        f"Live universe: top {LIVE_UNIVERSE_TOP_N} by mcap (≥ ₹{MIN_MCAP_CR:,.0f} cr) → "
+        f"{len(data)} symbols | book {LONG_POSITIONS} slots | sector_cap {SECTOR_CAP}"
+    )
     return data, meta
+
+
+def run_download_nifty500(argv=None):
+    """CLI: sync/force live-universe Yahoo history from START into data_cache/."""
+    import sys
+    argv = list(argv if argv is not None else sys.argv[2:])
+    # download defaults to sync (fill gaps); --force / --cache override
+    parse_data_mode(argv, default="sync")
+    data, meta = load_universe()
+    print(f"Done: {len(data)} symbols loaded, meta rows={len(meta)} (mode={DATA_MODE})")
+    return data, meta
+
+
+def run_fix_data(argv=None):
+    """CLI: re-apply fix_ohlcv on cached live-universe files without re-download."""
+    import sys
+    argv = list(argv if argv is not None else sys.argv[2:])
+    _ = argv  # reserved (--refresh-list accepted as no-op for compat)
+    syms, _table = nse_symbols_by_mcap_rank(1, LIVE_UNIVERSE_TOP_N)
+    # Restrict to the mcap floor used by the live book
+    meta_all = get_universe_meta(syms)
+    syms = [s for s in syms
+            if s in meta_all.index and np.isfinite(meta_all.loc[s, "mcap_cr"])
+            and meta_all.loc[s, "mcap_cr"] >= MIN_MCAP_CR]
+    extra = load_delisted_symbol_list()
+    symbols = sorted(set(syms) | set(extra))
+    meta = get_universe_meta(symbols)
+    listings = meta["listing"].to_dict() if "listing" in meta.columns else {}
+    return fix_cached_symbols(symbols, listings=listings)
+
+
+NSE_TOP_LIST_FILE = CACHE_DIR / "nse_top_by_mcap.csv"
+
+
+def nse_symbols_by_mcap_rank(rank_from=1, rank_to=1000, refresh_mcap=False):
+    """
+    Rank all NSE EQ symbols by today's Yahoo market cap.
+    Returns (symbols, table) for ranks rank_from..rank_to inclusive (1-based).
+    """
+    rank_from = max(1, int(rank_from))
+    rank_to = max(rank_from, int(rank_to))
+    symbols = get_nse_symbols()
+    meta = get_universe_meta(symbols, refresh=refresh_mcap)
+    ranked = meta.dropna(subset=["mcap_cr"]).sort_values("mcap_cr", ascending=False).copy()
+    ranked["rank"] = np.arange(1, len(ranked) + 1)
+    CACHE_DIR.mkdir(exist_ok=True)
+    ranked.to_csv(NSE_TOP_LIST_FILE)
+    table = ranked.iloc[rank_from - 1:rank_to].copy()
+    if len(table) == 0:
+        raise SystemExit(
+            f"No symbols in ranks {rank_from}-{rank_to} "
+            f"(only {len(ranked)} names with known mcap).")
+    print(f"NSE mcap ranks {rank_from}-{rank_to}: {len(table)} symbols "
+          f"(of {len(ranked)} with mcap) -> {NSE_TOP_LIST_FILE}")
+    print(f"  Rank {rank_from}: {table.index[0]} (₹{table.iloc[0]['mcap_cr']:,.0f} cr)  "
+          f"Rank {int(table.iloc[-1]['rank'])}: {table.index[-1]} "
+          f"(₹{table.iloc[-1]['mcap_cr']:,.0f} cr)")
+    return list(table.index), table
+
+
+def download_nse_mcap_ranks(rank_from=500, rank_to=1000, start=START, force=False,
+                            refresh_mcap=False):
+    """Download/recheck Yahoo OHLCV from `start` for NSE mcap ranks rank_from..rank_to."""
+    syms, table = nse_symbols_by_mcap_rank(
+        rank_from=rank_from, rank_to=rank_to, refresh_mcap=refresh_mcap)
+    listings = table["listing"].to_dict() if "listing" in table.columns else {}
+    # Listing dates for names missing from the ranked meta slice
+    eq = _read_equity_l().set_index("SYMBOL")
+    for s in syms:
+        if s not in listings or pd.isna(listings.get(s)):
+            if s in eq.index:
+                listings[s] = eq.loc[s, "listing"]
+    print(f"\nDownloading NSE ranks {rank_from}-{rank_to} from {start} "
+          f"({len(syms)} symbols) -> {CACHE_DIR}/")
+    data = download_many(syms, start=start, force=force, listings=listings, sequential=True)
+    ok = [s for s in syms if s in data]
+    print(f"Done ranks {rank_from}-{rank_to}: {len(ok)}/{len(syms)} usable "
+          f"(≥{MIN_BARS} bars after repair)")
+    return data, table
+
+
+def run_download_nse_ranks(argv=None):
+    """CLI: python main.py download-ranks [from] [to] [--force] [--refresh-mcap]"""
+    import sys
+    argv = list(argv if argv is not None else sys.argv[2:])
+    force = "--force" in argv or "-f" in argv
+    refresh_mcap = "--refresh-mcap" in argv
+    nums = [a for a in argv if a.lstrip("-").isdigit()]
+    rank_from = int(nums[0]) if len(nums) >= 1 else 500
+    rank_to = int(nums[1]) if len(nums) >= 2 else 1000
+    return download_nse_mcap_ranks(
+        rank_from=rank_from, rank_to=rank_to, force=force, refresh_mcap=refresh_mcap)
+
+
+def _load_cached_ohlcv(symbols, listings=None, min_bars=MIN_BARS):
+    """Read existing data_cache CSVs only — never hits Yahoo."""
+    listings = listings if listings is not None else {}
+    data = {}
+    missing = 0
+    short = 0
+    spiked = 0
+    for s in symbols:
+        f = _cache_file(_yf_equity(s))
+        if not f.exists():
+            missing += 1
+            continue
+        try:
+            df = pd.read_csv(f, index_col=0, parse_dates=True)
+        except Exception:
+            missing += 1
+            continue
+        if len(df) < min_bars:
+            short += 1
+            continue
+        mx = df.Close.pct_change().abs().max()
+        if np.isfinite(mx) and mx > MAX_ABS_DAILY_MOVE:
+            spiked += 1
+            continue
+        data[s] = df
+    print(
+        f"Cache-only load: {len(data)} OK, {missing} missing file, "
+        f"{short} <{min_bars} bars, {spiked} spike-dropped (no download)"
+    )
+    return data
+
+
+def load_mcap_floor_universe(min_mcap_cr=MIN_MCAP_CR, top_n=None, force=False, cache_only=True):
+    """
+    Load prices for today's names with mcap >= min_mcap_cr (optionally top_n by mcap).
+    Returns (data, meta_ranked, ranked_all).
+
+    Honours DATA_MODE; legacy force/cache_only still work when set explicitly.
+    """
+    if force:
+        set_data_mode("force")
+    elif cache_only is False:
+        set_data_mode("sync")
+    elif cache_only is True:
+        set_data_mode("cache")
+    symbols = get_nse_symbols()
+    meta = get_universe_meta(symbols)
+    ranked = meta.dropna(subset=["mcap_cr"]).sort_values("mcap_cr", ascending=False).copy()
+    ranked = ranked[ranked["mcap_cr"] >= float(min_mcap_cr)]
+    ranked["rank"] = np.arange(1, len(ranked) + 1)
+    CACHE_DIR.mkdir(exist_ok=True)
+    ranked.to_csv(NSE_TOP_LIST_FILE)
+    take = ranked if top_n is None else ranked.head(int(top_n))
+    syms = list(take.index)
+    print(f"Mcap ≥ ₹{min_mcap_cr:,.0f} cr: {len(ranked)} names; loading top {len(syms)} (mode={DATA_MODE})")
+    listings = take["listing"].to_dict() if "listing" in take.columns else {}
+    eq = _read_equity_l().set_index("SYMBOL")
+    for s in syms:
+        if s not in listings or pd.isna(listings.get(s)):
+            if s in eq.index:
+                listings[s] = eq.loc[s, "listing"]
+    if DATA_MODE == "force":
+        data = download_many(syms, start=START, force=True, listings=listings, sequential=True)
+    elif DATA_MODE == "cache":
+        data = _load_cached_ohlcv(syms, listings=listings)
+    else:
+        data = download_many(syms, start=START, force=False, listings=listings, sequential=True)
+    meta_ok = take.reindex(list(data))
+    print(f"Usable history: {len(data)}/{len(syms)}")
+    return data, meta_ok, ranked
+
+
+def _subset_long_panels(tickers, P, keep_set):
+    """Keep columns in keep_set and recompute cross-sectional ranks inside that universe."""
+    keep = [t for t in tickers if t in keep_set and t in P["Close"].columns]
+    P2 = {}
+    for k, v in P.items():
+        if isinstance(v, pd.DataFrame):
+            cols = [c for c in keep if c in v.columns]
+            P2[k] = v[cols]
+        else:
+            P2[k] = v
+    rank3 = P2["roc63"].rank(axis=1, pct=True)
+    rank6 = P2["roc126"].rank(axis=1, pct=True)
+    rank12 = P2["roc252"].rank(axis=1, pct=True)
+    P2["score"] = (rank6 + rank12) / 2.0
+    P2["score_3_6_12"] = (rank3 + rank6 + rank12) / 3.0
+    rs3 = P2["sharpe63"].rank(axis=1, pct=True)
+    rs6 = P2["sharpe126"].rank(axis=1, pct=True)
+    rs12 = P2["sharpe252"].rank(axis=1, pct=True)
+    P2["score_sharpe_3_6_12"] = (rs3 + rs6 + rs12) / 3.0
+    return keep, P2
+
+
+# Default start years for long-history mcap grid (Nifty 500 Yahoo from ~2007;
+# earlier starts still run Long, vs-index metrics begin when ^CRSLDX exists).
+MCAP_GRID_STARTS_FROM_2000 = (
+    "2000-01-01",
+    "2003-01-01",
+    "2006-01-01",
+    "2009-01-01",
+    "2012-01-01",
+    "2015-01-01",
+    "2017-12-01",
+    "2020-01-01",
+)
+
+
+def run_mcap_grid_rolling_study(
+    start="2017-12-01",
+    starts=None,
+    min_mcap_cr=MIN_MCAP_CR,
+    top_ns=None,
+    sector_caps=(2, 3, 4),
+    position_counts=(10, 15, 20),
+    horizons=(1, 2, 3, 5),
+    out_tag=None,
+):
+    """
+    Sweep universe size (top N by mcap among ≥ min_mcap_cr), industry cap, and book size.
+    Backtests live Long from each start; writes detailed rolling vs Nifty 500 under output/studies/.
+
+    If `starts` is set (list of YYYY-MM-DD), runs the full grid for each start with one panel build.
+    Comparison vs Nifty 500 uses the overlap only (index history begins ~2007-03).
+    """
+    _ensure_output_dirs()
+    start_list = list(starts) if starts else [start]
+    data, meta, ranked_all = load_mcap_floor_universe(min_mcap_cr=min_mcap_cr, top_n=None)
+    max_n = len(data)
+    if top_ns is None:
+        # Include 300 for early-history thin coverage; 500..1200 step 100 clipped to usable
+        cand = [300] + list(range(500, 1201, 100))
+        top_ns = sorted({min(n, max_n) for n in cand if n <= max_n or n == 300})
+        if max_n not in top_ns and max_n >= 300:
+            top_ns.append(max_n)
+            top_ns = sorted(set(top_ns))
+    multi = len(start_list) > 1
+    if out_tag is None:
+        out_tag = "multistart_from_2000" if multi else "from_2017dec"
+    print(
+        f"Grid top_n={top_ns} sector_caps={sector_caps} positions={position_counts} "
+        f"starts={start_list} horizons={horizons}"
+    )
+
+    bench, bench_ticker = _load_nifty500_close(None)
+    print("Building full panel (largest mcap floor set)...")
+    tickers_all, P_all = build_panels(data, universe=meta, bench_close=bench)
+    sectors_map = load_sectors(tickers_all)
+    ranked_syms = [s for s in ranked_all.index if s in data]
+    # How many top-N names have any bars by each calendar year (coverage hint)
+    close_all = P_all["Close"]
+    for s0 in start_list:
+        ts = pd.Timestamp(s0)
+        if ts in close_all.index or len(close_all.loc[:ts]):
+            slice_c = close_all.loc[:ts]
+            if len(slice_c):
+                n_live = int(slice_c.iloc[-1].notna().sum()) if len(slice_c) else 0
+            else:
+                n_live = 0
+        else:
+            n_live = 0
+        # Prefer first available row on/after start
+        after = close_all.loc[ts:]
+        n_at = int(after.iloc[0].notna().sum()) if len(after) else 0
+        print(f"  coverage @ {s0}: {n_at}/{len(close_all.columns)} panel names have a print")
+
+    benches = load_benchmarks()
+    n500 = benches.get("Nifty 500", bench)
+    if n500 is None:
+        raise SystemExit("Need Nifty 500 benchmark for rolling comparison.")
+    n500_start = str(pd.Series(n500).dropna().index.min().date()) if n500 is not None else "?"
+    print(f"Nifty 500 series starts {n500_start} — vs-index / rolling use overlap only.")
+
+    rows = []
+    roll_rows = []
+    n_jobs = len(start_list) * len(top_ns) * len(sector_caps) * len(position_counts)
+    done = 0
+    for start_req in start_list:
+        for top_n in top_ns:
+            keep = set(ranked_syms[: int(top_n)])
+            tickers, P = _subset_long_panels(tickers_all, P_all, keep)
+            sectors = [sectors_map.get(t, "") for t in tickers]
+            sleeve = cash_sleeve_returns(P["Close"].index)
+            for sector_cap in sector_caps:
+                for n_pos in position_counts:
+                    done += 1
+                    kw = dict(LONG_BOOK)
+                    kw.update(
+                        sector_cap=int(sector_cap),
+                        max_positions=int(n_pos),
+                        start=start_req,
+                    )
+                    if sleeve is not None:
+                        kw["cash_ret"] = sleeve
+                        kw["cash_ret_idle_only"] = False
+                    eq, tr = backtest(tickers, P, sectors=sectors, **kw)
+                    eq = eq.dropna()
+                    if len(eq) < 252:
+                        print(
+                            f"  [{done}/{n_jobs}] start{start_req[:4]} top{top_n} "
+                            f"sec{sector_cap} pos{n_pos}: too short, skip"
+                        )
+                        continue
+                    # Align Nifty 500 on same window, rebase
+                    n5 = n500.reindex(eq.index).ffill().dropna()
+                    both = eq.index.intersection(n5.index)
+                    if len(both) < 252:
+                        print(
+                            f"  [{done}/{n_jobs}] start{start_req[:4]} top{top_n} "
+                            f"sec{sector_cap} pos{n_pos}: <1y overlap with N500, skip"
+                        )
+                        continue
+                    eq_a = eq.loc[both]
+                    n5_a = _equity_from_price(n5.loc[both])
+                    eq_a = eq_a / eq_a.iloc[0] * INITIAL_CAPITAL
+                    p_long = perf_stats(eq_a, "Long")
+                    p_n5 = perf_stats(n5_a, "N500")
+                    tstats = trade_stats(tr)
+                    row = {
+                        "start_requested": start_req,
+                        "top_n": int(top_n),
+                        "symbols_panel": len(tickers),
+                        "sector_cap": int(sector_cap),
+                        "max_positions": int(n_pos),
+                        "start": str(eq_a.index[0].date()),
+                        "end": str(eq_a.index[-1].date()),
+                        "Long CAGR %": round(p_long["CAGR %"], 2),
+                        "N500 CAGR %": round(p_n5["CAGR %"], 2),
+                        "Excess CAGR pts": round(p_long["CAGR %"] - p_n5["CAGR %"], 2),
+                        "Long Max DD %": round(p_long["Max DD %"], 2),
+                        "N500 Max DD %": round(p_n5["Max DD %"], 2),
+                        "Long Calmar": round(p_long["Calmar"], 3) if np.isfinite(p_long["Calmar"]) else np.nan,
+                        "N500 Calmar": round(p_n5["Calmar"], 3) if np.isfinite(p_n5["Calmar"]) else np.nan,
+                        "Long Sharpe": round(p_long["Sharpe"], 3) if np.isfinite(p_long["Sharpe"]) else np.nan,
+                        "Long Total %": round((eq_a.iloc[-1] / eq_a.iloc[0] - 1) * 100, 2),
+                        "N500 Total %": round((n5_a.iloc[-1] / n5_a.iloc[0] - 1) * 100, 2),
+                        "Long Final": round(p_long["Final value"], 0),
+                        "Trades": tstats.get("Trades", 0),
+                        "Win %": round(tstats.get("Win rate %", np.nan), 1) if tstats else np.nan,
+                        "PF": round(tstats.get("Profit factor", np.nan), 2) if tstats else np.nan,
+                        "Avg hold days": round(tstats.get("Avg days held", np.nan), 0) if tstats else np.nan,
+                    }
+                    # Rolling excess vs Nifty 500
+                    for y in horizons:
+                        rl = rolling_window_returns(eq_a, y)
+                        rn = rolling_window_returns(n5_a, y)
+                        if rl.empty or rn.empty:
+                            continue
+                        ix = rl.index.intersection(rn.index)
+                        # need enough finite overlapping windows
+                        rl_i = rl.loc[ix].dropna()
+                        rn_i = rn.loc[ix].dropna()
+                        ix2 = rl_i.index.intersection(rn_i.index)
+                        if len(ix2) < 20:
+                            continue
+                        ex = rl_i.loc[ix2] - rn_i.loc[ix2]
+                        beat = float((rl_i.loc[ix2] > rn_i.loc[ix2]).mean() * 100)
+                        row[f"roll{y}y Long med CAGR"] = round(
+                            _annualized_from_total_pct(float(rl_i.loc[ix2].median()), y), 2)
+                        row[f"roll{y}y N500 med CAGR"] = round(
+                            _annualized_from_total_pct(float(rn_i.loc[ix2].median()), y), 2)
+                        row[f"roll{y}y beat %"] = round(beat, 1)
+                        row[f"roll{y}y excess med %"] = round(float(ex.median()), 2)
+                        row[f"roll{y}y excess p10 %"] = round(float(np.nanpercentile(ex, 10)), 2)
+                        row[f"roll{y}y Long win%"] = round(float((rl_i.loc[ix2] > 0).mean() * 100), 1)
+                        roll_rows.append({
+                            "start_requested": start_req,
+                            "top_n": int(top_n),
+                            "sector_cap": int(sector_cap),
+                            "max_positions": int(n_pos),
+                            "Horizon (y)": y,
+                            "Windows": len(ix2),
+                            "Long beat N500 %": round(beat, 1),
+                            "Excess total % median": round(float(ex.median()), 2),
+                            "Excess total % mean": round(float(ex.mean()), 2),
+                            "Excess total % p10": round(float(np.nanpercentile(ex, 10)), 2),
+                            "Excess total % p90": round(float(np.nanpercentile(ex, 90)), 2),
+                            "Long CAGR % median": round(
+                                _annualized_from_total_pct(float(rl_i.loc[ix2].median()), y), 2),
+                            "N500 CAGR % median": round(
+                                _annualized_from_total_pct(float(rn_i.loc[ix2].median()), y), 2),
+                            "Long total % median": round(float(rl_i.loc[ix2].median()), 2),
+                            "N500 total % median": round(float(rn_i.loc[ix2].median()), 2),
+                            "Long win %": round(float((rl_i.loc[ix2] > 0).mean() * 100), 1),
+                        })
+                    rows.append(row)
+                    print(
+                        f"  [{done}/{n_jobs}] {start_req[:4]} top{top_n} sec{sector_cap} pos{n_pos}: "
+                        f"CAGR {row['Long CAGR %']:.1f}% vs N500 {row['N500 CAGR %']:.1f}% "
+                        f"(+{row['Excess CAGR pts']:.1f}) DD {row['Long Max DD %']:.1f}% "
+                        f"Calmar {row['Long Calmar']:.2f} "
+                        f"roll1y beat {row.get('roll1y beat %', float('nan'))}% "
+                        f"[{row['start']}→{row['end']}]"
+                    )
+
+    grid = pd.DataFrame(rows)
+    roll = pd.DataFrame(roll_rows)
+    out_grid = OUTPUT_STUDIES / f"mcap_grid_{out_tag}.csv"
+    out_roll = OUTPUT_STUDIES / f"mcap_grid_rolling_{out_tag}.csv"
+    grid.to_csv(out_grid, index=False)
+    roll.to_csv(out_roll, index=False)
+
+    # Leaderboards
+    if len(grid):
+        by_calmar = grid.sort_values("Long Calmar", ascending=False).head(20)
+        by_excess = grid.sort_values("Excess CAGR pts", ascending=False).head(20)
+        by_roll = (
+            grid.sort_values("roll1y beat %", ascending=False).head(20)
+            if "roll1y beat %" in grid else grid.head(0)
+        )
+        print("\n=== Top by Calmar ===")
+        cols = [c for c in [
+            "start_requested", "top_n", "sector_cap", "max_positions",
+            "Long CAGR %", "N500 CAGR %", "Excess CAGR pts", "Long Max DD %",
+            "Long Calmar", "roll1y beat %", "roll2y beat %", "roll3y beat %",
+            "roll5y beat %", "Trades",
+        ] if c in grid.columns]
+        print(by_calmar[cols].to_string(index=False))
+        print("\n=== Top by Excess CAGR ===")
+        print(by_excess[cols].to_string(index=False))
+        if len(by_roll):
+            print("\n=== Top by 1y rolling beat rate ===")
+            print(by_roll[cols].to_string(index=False))
+        # Slice views
+        slice_keys = [
+            ("start year", "start_requested"),
+            ("universe size", "top_n"),
+            ("sector_cap", "sector_cap"),
+            ("max_positions", "max_positions"),
+        ]
+        for label, key in slice_keys:
+            if key not in grid.columns:
+                continue
+            agg = {
+                "Long CAGR %": "median",
+                "Excess CAGR pts": "median",
+                "Long Calmar": "median",
+                "Long Max DD %": "median",
+                **({k: "median" for k in grid.columns if k.startswith("roll") and k.endswith("beat %")}),
+            }
+            g = grid.groupby(key).agg(agg).round(2)
+            print(f"\n=== Median by {label} ===")
+            print(g.to_string())
+            safe = key.replace(" ", "_")
+            g.to_csv(OUTPUT_STUDIES / f"mcap_grid_by_{safe}_{out_tag}.csv")
+
+        # Best config per start (by Calmar)
+        if "start_requested" in grid.columns:
+            print("\n=== Best Calmar per start ===")
+            idx = grid.groupby("start_requested")["Long Calmar"].idxmax()
+            print(grid.loc[idx, cols].to_string(index=False))
+
+    print(f"\nSaved {out_grid}")
+    print(f"Saved {out_roll}")
+    print(
+        f"Universe available: {max_n} usable names with mcap ≥ ₹{min_mcap_cr:,.0f} cr "
+        f"(requested up to 1200). Bench: {bench_ticker or 'Nifty 500'} (from {n500_start})"
+    )
+    return grid, roll
+
+
+def run_mcap_grid_cli(argv=None):
+    """
+    CLI:
+      python main.py study-mcap-grid [--start YYYY-MM-DD]
+      python main.py study-mcap-grid --from-2000
+      python main.py study-mcap-grid --starts 2000-01-01,2009-01-01,2017-12-01
+    """
+    import sys
+    argv = list(argv if argv is not None else sys.argv[2:])
+    starts = None
+    start = "2017-12-01"
+    out_tag = None
+    if "--from-2000" in argv:
+        starts = list(MCAP_GRID_STARTS_FROM_2000)
+        out_tag = "multistart_from_2000"
+    if "--starts" in argv:
+        i = argv.index("--starts")
+        if i + 1 < len(argv):
+            starts = [s.strip() for s in argv[i + 1].split(",") if s.strip()]
+            out_tag = out_tag or "multistart_custom"
+    if "--start" in argv:
+        i = argv.index("--start")
+        if i + 1 < len(argv):
+            start = argv[i + 1]
+    return run_mcap_grid_rolling_study(start=start, starts=starts, out_tag=out_tag)
 
 
 # ----------------------------- US UNIVERSE (Long backtest) --------------------
@@ -1050,7 +1976,8 @@ def _rolling_sharpe(close, window, rf_daily=None):
 
 
 def add_indicators(df, mcap_now_cr=None, shares=None, listed_on=None,
-                   tradable_mcap_min=None, turnover_min=None, mcap_in_usd=False):
+                   tradable_mcap_min=None, turnover_min=None, mcap_in_usd=False,
+                   require_mcap=True):
     d = df.copy()
     t_mcap = MIN_MCAP_CR if tradable_mcap_min is None else tradable_mcap_min
     t_turn = MIN_TURNOVER if turnover_min is None else turnover_min
@@ -1071,13 +1998,13 @@ def add_indicators(df, mcap_now_cr=None, shares=None, listed_on=None,
     if listed_on is not None and pd.notna(listed_on):
         cool = pd.Timestamp(listed_on) + pd.Timedelta(days=LISTING_COOLDOWN_DAYS)
         ok = ok & (d.index >= cool)
-    if mcap_now_cr is not None and MCAP_MODE == "point_in_time":
+    if require_mcap and mcap_now_cr is not None and MCAP_MODE == "point_in_time":
         if mcap_in_usd:
             est_mcap = estimate_mcap_usd(d.Close, mcap_now_cr, shares=shares)
         else:
             est_mcap = estimate_mcap_cr(d.Close, mcap_now_cr, shares=shares)
         ok = ok & (est_mcap >= t_mcap)
-    elif mcap_now_cr is not None and MCAP_MODE == "today":
+    elif require_mcap and mcap_now_cr is not None and MCAP_MODE == "today":
         ok = ok & (float(mcap_now_cr) >= t_mcap)
     d["high252"] = d.Close.rolling(HIGH_WINDOW).max()
     d["prox"] = d.Close / d["high252"]
@@ -1363,15 +2290,25 @@ def cli_help():
     print(
         """
 Usage:
-  python main.py backtest          Run Long backtest -> output/backtest/
-  python main.py rolling           Rolling 1–5y return stats -> output/backtest/rolling_returns_summary.csv
-  python main.py live            Next Long buy list -> output/live/long_next_buys.csv
-  python main.py live --fresh    Same, assuming empty 15-slot book
+  python main.py download          Sync live universe gaps from Yahoo -> data_cache/
+  python main.py download --force  Resync: re-download all live-universe prices + meta
+  python main.py download --cache  Load cache only (no Yahoo)
+  python main.py download-ranks 500 1000 [--sync|--force|--cache]
+  python main.py fix-data          Re-run spike/OHLC cleanup on cached files
+
+  python main.py backtest [--cache|--sync|--force]
+  python main.py rolling  [--cache|--sync|--force]
+  python main.py live [--fresh] [--cache|--sync|--force]
+  python main.py study-mcap-grid [--from-2000] [--cache|--sync|--force]
+
+Data source flags (prices + mcap meta):
+  --cache / --cache-only   local CSVs only (default for live/backtest/study)
+  --sync  / --yahoo        use cache; pull from Yahoo only for missing gaps
+  --force / --resync / -f  ignore usable cache; re-download from Yahoo
 
   python main.py backtest-us       US Long backtest (top mcap list, ~$240M floor)
   python main.py download-us       Top 1000 US by mcap, Yahoo history from 2010
   python main.py import-us         S&P 1500 + 2000 more NASDAQ/NYSE (fill missing, from 2010)
-  python main.py import-us --extra 3000   # even more names
 Research (optional, -> output/studies/):
   python main.py study rank | entry | validate | atr | compare | universe | regime | us | sep2024
 
@@ -1393,7 +2330,7 @@ def backtest(tickers, P, entry_col="entry_long", rank_col="roc126", start=None,
              crash_off=None, reentry_ok=None, crash_scale=1.0,
              rebal_offset_days=0, tiered_exit=False, holdings_vol_target=False,
              cash_ret_idle_only=False, cost_per_side=None, exit_stress_slippage=False,
-             risk_per_trade=None):
+             risk_per_trade=None, daily_dd_stop=None):
     """risk_mult and slot_cap are per-date arrays aligned to P['Close'].index.
 
     risk_mult scales RISK_PER_TRADE (0 blocks the entry). slot_cap replaces
@@ -1401,6 +2338,7 @@ def backtest(tickers, P, entry_col="entry_long", rank_col="roc126", start=None,
     order fills at the next open.
     crash_off: daily flatten (or partial trim via crash_scale) on held positions.
     reentry_ok: when False, block new entries even on rebalance days.
+    daily_dd_stop: check peak drawdown every day (sma200 book); dd_stop stays month-end.
     """
     dates = P["Close"].index
     O = P["Open"].to_numpy()
@@ -1539,6 +2477,8 @@ def backtest(tickers, P, entry_col="entry_long", rank_col="roc126", start=None,
                         p["stop"] = max(p["stop"], p["high"] - atr_mult * ATR[i, j])
                         if c < p["stop"]:
                             p["exit_reason"] = "trail_stop"
+                if daily_dd_stop and not p["exit_reason"] and c < p["high"] * (1 - daily_dd_stop):
+                    p["exit_reason"] = "peak_dd_daily"
                 if (not p["exit_reason"] and time_stop and (i - p["entry_i"]) >= time_stop
                         and c <= p["entry_price"]):
                     p["exit_reason"] = "time_stop"
@@ -1895,57 +2835,237 @@ def summarize_rolling_windows(eq, years, name):
     }
 
 
+def _equity_from_price(px, start_equity=INITIAL_CAPITAL):
+    s = px.dropna()
+    if s.empty:
+        return s
+    return s / s.iloc[0] * start_equity
+
+
+def _period_stats(eq, name, start=None, end=None):
+    s = eq.dropna()
+    if start is not None:
+        s = s.loc[pd.Timestamp(start):]
+    if end is not None:
+        s = s.loc[:pd.Timestamp(end)]
+    if len(s) < 2:
+        return None
+    s = s / s.iloc[0] * INITIAL_CAPITAL
+    p = perf_stats(s, name)
+    return {
+        "name": name,
+        "start": str(s.index[0].date()),
+        "end": str(s.index[-1].date()),
+        "CAGR %": round(p["CAGR %"], 2),
+        "Vol %": round(p["Vol %"], 2),
+        "Sharpe": round(p["Sharpe"], 3) if np.isfinite(p["Sharpe"]) else np.nan,
+        "Max DD %": round(p["Max DD %"], 2),
+        "Calmar": round(p["Calmar"], 3) if np.isfinite(p["Calmar"]) else np.nan,
+        "Final": round(p["Final value"], 0),
+        "Total %": round((s.iloc[-1] / s.iloc[0] - 1) * 100, 2),
+    }
+
+
 def run_rolling_returns():
-    """Rolling 1–5y total and annualized returns for Long (live) and Nifty 500."""
+    """Deep Long (Nifty 500 universe) vs Nifty 500 index comparison."""
+    return run_deep_nifty500_compare()
+
+
+def run_deep_nifty500_compare():
+    """
+    Complete Long-vs-Nifty-500 comparison on today's Nifty 500 equity universe.
+    Writes CSVs under output/backtest/ and prints the key tables.
+    """
     _ensure_output_dirs()
+    print("Loading Nifty 500 universe + running live Long book...")
     data, universe = load_universe()
-    bench, _ = _load_nifty500_close(None)
+    bench, bench_ticker = _load_nifty500_close(None)
     tickers, P = build_panels(data, universe=universe, bench_close=bench)
     sectors = [load_sectors(tickers).get(t, "") for t in tickers]
-    eq_long, _ = backtest(tickers, P, sectors=sectors, **adopted_long_kwargs(P))
+    eq_long, trades = backtest(tickers, P, sectors=sectors, **adopted_long_kwargs(P))
     eq_long = eq_long.dropna()
     idx = eq_long.index
+
     benches = load_benchmarks()
     n500 = benches.get("Nifty 500")
-    if n500 is not None:
-        n500 = n500.reindex(idx).ffill()
-        n500_eq = n500 / n500.dropna().iloc[0] * INITIAL_CAPITAL
-    else:
-        n500_eq = None
+    if n500 is None and bench is not None:
+        n500 = bench
+        print(f"  Using fallback Nifty 500 proxy ({bench_ticker})")
+    if n500 is None:
+        raise SystemExit("Could not load Nifty 500 benchmark (^CRSLDX / ^CNX500).")
+    n500 = n500.reindex(idx).ffill()
+    n500_eq = _equity_from_price(n500.loc[idx])
+
+    eq_long.to_csv(OUTPUT_BACKTEST / "equity_curve_long.csv", header=["equity"])
+    n500_eq.to_csv(OUTPUT_BACKTEST / "equity_curve_nifty500.csv", header=["equity"])
+    trades.to_csv(OUTPUT_BACKTEST / "trades_long.csv", index=False)
+
+    long_full = _period_stats(eq_long, "Long (live)")
+    n500_full = _period_stats(n500_eq, "Nifty 500")
+    tstats = trade_stats(trades)
+    years = (eq_long.index[-1] - eq_long.index[0]).days / 365.25
+    hold = hold_profile(trades, years)
+    headline = pd.DataFrame([
+        {**long_full, "Trades": tstats.get("Trades", np.nan),
+         "Win %": round(tstats.get("Win rate %", np.nan), 1) if tstats else np.nan,
+         "PF": round(tstats.get("Profit factor", np.nan), 2) if tstats else np.nan,
+         "Avg hold days": round(tstats.get("Avg days held", np.nan), 0) if tstats else np.nan,
+         "Symbols in panel": len(tickers)},
+        {**n500_full, "Trades": np.nan, "Win %": np.nan, "PF": np.nan,
+         "Avg hold days": np.nan, "Symbols in panel": np.nan},
+    ])
+    headline["Excess CAGR vs N500 (pts)"] = [
+        round(long_full["CAGR %"] - n500_full["CAGR %"], 2), 0.0]
+    # Positive = Long had a shallower (less negative) max drawdown than Nifty 500
+    headline["DD improvement vs N500 (pts)"] = [
+        round(long_full["Max DD %"] - n500_full["Max DD %"], 2), 0.0]
+    headline.to_csv(OUTPUT_BACKTEST / "long_vs_n500_headline.csv", index=False)
+
+    periods = [
+        ("2000-2009", "2000-01-01", "2009-12-31"),
+        ("2010-2018", "2010-01-01", "2018-12-31"),
+        ("2019+", "2019-01-01", None),
+        ("Full", None, None),
+    ]
+    sub_rows = []
+    for label, a, b in periods:
+        lp = _period_stats(eq_long, "Long (live)", a, b)
+        np_ = _period_stats(n500_eq, "Nifty 500", a, b)
+        if lp is None or np_ is None:
+            continue
+        sub_rows.append({
+            "Period": label,
+            "Long start": lp["start"], "Long end": lp["end"],
+            "Long CAGR %": lp["CAGR %"], "N500 CAGR %": np_["CAGR %"],
+            "Excess CAGR pts": round(lp["CAGR %"] - np_["CAGR %"], 2),
+            "Long Max DD %": lp["Max DD %"], "N500 Max DD %": np_["Max DD %"],
+            "Long Calmar": lp["Calmar"], "N500 Calmar": np_["Calmar"],
+            "Long Sharpe": lp["Sharpe"], "N500 Sharpe": np_["Sharpe"],
+            "Long Total %": lp["Total %"], "N500 Total %": np_["Total %"],
+            "Long Final": lp["Final"], "N500 Final": np_["Final"],
+        })
+    sub = pd.DataFrame(sub_rows)
+    sub.to_csv(OUTPUT_BACKTEST / "long_vs_n500_subperiods.csv", index=False)
+
+    y_long = yearly_returns(eq_long).dropna()
+    y_n500 = yearly_returns(n500_eq).dropna()
+    y_long.index = pd.to_datetime(y_long.index).year
+    y_n500.index = pd.to_datetime(y_n500.index).year
+    years_ix = sorted(set(y_long.index) | set(y_n500.index))
+    yearly = pd.DataFrame({
+        "Year": years_ix,
+        "Long %": [float(y_long[y]) if y in y_long.index else np.nan for y in years_ix],
+        "Nifty 500 %": [float(y_n500[y]) if y in y_n500.index else np.nan for y in years_ix],
+    })
+    yearly["Excess pts"] = yearly["Long %"] - yearly["Nifty 500 %"]
+    yearly["Long wins"] = yearly["Excess pts"] > 0
+    yearly.to_csv(OUTPUT_BACKTEST / "long_vs_n500_yearly.csv", index=False)
 
     horizons = (1, 2, 3, 4, 5)
-    rows = []
-    series_map = {"Long (live)": eq_long}
-    if n500_eq is not None:
-        series_map["Nifty 500"] = n500_eq
+    roll_rows, excess_rows, latest_rows = [], [], []
+    series_map = {"Long (live)": eq_long, "Nifty 500": n500_eq}
     for name, eq in series_map.items():
         for y in horizons:
             row = summarize_rolling_windows(eq, y, name)
             if row:
-                rows.append(row)
-    table = pd.DataFrame(rows)
-    out = OUTPUT_BACKTEST / "rolling_returns_summary.csv"
-    table.to_csv(out, index=False)
-    print("\n=== Rolling holding-period returns (252 trading days per year) ===")
-    print("Total return % over each overlapping window; CAGR columns annualize that total.")
-    print(table.to_string(index=False))
-    print(f"\nSaved {out}")
-    # Latest window ending on last data date
-    print("\n=== Latest window (ends on last backtest date) ===")
-    last_rows = []
-    for name, eq in series_map.items():
-        for y in horizons:
-            raw = rolling_window_returns(eq, y)
-            if raw.empty:
-                continue
-            v = raw.iloc[-1]
-            last_rows.append({
-                "Strategy": name, "Horizon (y)": y,
-                "Total %": round(v, 2),
-                "CAGR %": round(_annualized_from_total_pct(v, y), 2),
-            })
-    print(pd.DataFrame(last_rows).to_string(index=False))
-    return table
+                roll_rows.append(row)
+    for y in horizons:
+        rl = rolling_window_returns(eq_long, y)
+        rn = rolling_window_returns(n500_eq, y)
+        if rl.empty or rn.empty:
+            continue
+        both = rl.index.intersection(rn.index)
+        if len(both) == 0:
+            continue
+        ex = rl.loc[both] - rn.loc[both]
+        beat = (rl.loc[both] > rn.loc[both]).mean() * 100
+        excess_rows.append({
+            "Horizon (y)": y,
+            "Windows": len(both),
+            "Long beat N500 %": round(beat, 1),
+            "Excess total % median": round(ex.median(), 2),
+            "Excess total % mean": round(ex.mean(), 2),
+            "Excess total % p10": round(float(np.nanpercentile(ex, 10)), 2),
+            "Excess total % p90": round(float(np.nanpercentile(ex, 90)), 2),
+            "Excess total % worst": round(ex.min(), 2),
+            "Excess total % best": round(ex.max(), 2),
+            "Long total % median": round(rl.loc[both].median(), 2),
+            "N500 total % median": round(rn.loc[both].median(), 2),
+            "Long CAGR % median": round(_annualized_from_total_pct(rl.loc[both].median(), y), 2),
+            "N500 CAGR % median": round(_annualized_from_total_pct(rn.loc[both].median(), y), 2),
+        })
+        latest_rows.append({
+            "Horizon (y)": y,
+            "Long Total %": round(rl.iloc[-1], 2),
+            "N500 Total %": round(rn.iloc[-1], 2),
+            "Excess pts": round(rl.iloc[-1] - rn.iloc[-1], 2),
+            "Long CAGR %": round(_annualized_from_total_pct(rl.iloc[-1], y), 2),
+            "N500 CAGR %": round(_annualized_from_total_pct(rn.iloc[-1], y), 2),
+        })
+    roll = pd.DataFrame(roll_rows)
+    excess = pd.DataFrame(excess_rows)
+    latest = pd.DataFrame(latest_rows)
+    roll.to_csv(OUTPUT_BACKTEST / "rolling_returns_summary.csv", index=False)
+    excess.to_csv(OUTPUT_BACKTEST / "long_vs_n500_rolling_excess.csv", index=False)
+    latest.to_csv(OUTPUT_BACKTEST / "long_vs_n500_latest_windows.csv", index=False)
+
+    jack = _jackpot(trades) if not trades.empty else {}
+    meta = pd.DataFrame([{
+        "universe": "Nifty 500 (today membership)",
+        "symbols_panel": len(tickers),
+        "bench": bench_ticker or "Nifty 500",
+        "start": str(eq_long.index[0].date()),
+        "end": str(eq_long.index[-1].date()),
+        "years": round(years, 2),
+        "median_hold_days": hold.get("Median days", np.nan),
+        "held_ge_1y_pct": hold.get("Held >= 1y %", np.nan),
+        "trades_per_year": hold.get("Per year", np.nan),
+        "2x_closed": hold.get("2x closed", np.nan),
+        "3x_closed": hold.get("3x closed", np.nan),
+        "pnl_all": jack.get("PnL all", np.nan),
+        "top10_pnl_share": (
+            jack["Top 10 PnL"] / jack["PnL all"] if jack.get("PnL all") else np.nan
+        ),
+        "yearly_long_win_rate_%": round(
+            float(yearly.loc[yearly["Excess pts"].notna(), "Long wins"].mean() * 100), 1),
+        "yearly_avg_excess_pts": round(float(yearly["Excess pts"].mean()), 2),
+    }])
+    meta.to_csv(OUTPUT_BACKTEST / "long_vs_n500_meta.csv", index=False)
+
+    y_both = yearly.dropna(subset=["Excess pts"])
+    y_win = float(y_both["Long wins"].mean() * 100) if len(y_both) else np.nan
+    y_ex = float(y_both["Excess pts"].mean()) if len(y_both) else np.nan
+
+    print("\n" + "=" * 72)
+    print("LONG (Nifty 500 universe) vs NIFTY 500 — deep comparison")
+    print("=" * 72)
+    print(f"Panel: {len(tickers)} symbols | {eq_long.index[0].date()} → {eq_long.index[-1].date()} "
+          f"({years:.1f}y) | bench {bench_ticker or 'Nifty 500'}")
+    print("Note: ^CRSLDX (Nifty 500) history starts ~2007; earlier Long years have no index comparison.")
+    print("\n--- Headline ---")
+    print(headline.to_string(index=False))
+    print("\n--- Subperiods ---")
+    print(sub.to_string(index=False))
+    print("\n--- Rolling windows (summary) ---")
+    print(roll.to_string(index=False))
+    print("\n--- Rolling excess (Long − Nifty 500) ---")
+    print(excess.to_string(index=False))
+    print("\n--- Latest window (ends on last date) ---")
+    print(latest.to_string(index=False))
+    print(f"\n--- Calendar years (overlap only): Long win rate {y_win:.0f}% | "
+          f"avg excess {y_ex:+.1f} pts ---")
+    print(yearly.to_string(index=False))
+    print(f"\nTrade profile: {tstats.get('Trades', 0)} trades, "
+          f"win {tstats.get('Win rate %', float('nan')):.1f}%, "
+          f"PF {tstats.get('Profit factor', float('nan')):.2f}, "
+          f"avg hold {tstats.get('Avg days held', float('nan')):.0f}d")
+    print("Saved under output/backtest/: long_vs_n500_*.csv, rolling_returns_summary.csv, "
+          "equity_curve_long.csv, equity_curve_nifty500.csv, trades_long.csv")
+    return {
+        "headline": headline, "subperiods": sub, "yearly": yearly,
+        "rolling": roll, "excess": excess, "latest": latest, "meta": meta,
+        "eq_long": eq_long, "eq_n500": n500_eq, "trades": trades,
+    }
 
 
 def hold_profile(tr, years):
@@ -3807,13 +4927,28 @@ def run_compare_long():
 if __name__ == "__main__":
     import sys
     cmd = sys.argv[1] if len(sys.argv) > 1 else "help"
+    # Data source: download* defaults to sync (fill gaps); everything else cache-only
+    _dl_cmds = {
+        "download", "download-nifty500", "download-n500",
+        "download-ranks", "download-nse-ranks", "download-mcap-ranks",
+        "download-us", "us-download", "import-us", "us-import", "regenerate-us",
+    }
+    parse_data_mode(sys.argv[2:], default="sync" if cmd in _dl_cmds else "cache")
     # Primary commands
     if cmd in ("help", "-h", "--help"):
         cli_help()
+    elif cmd in ("download", "download-nifty500", "download-n500"):
+        run_download_nifty500(sys.argv[2:])
+    elif cmd in ("download-ranks", "download-nse-ranks", "download-mcap-ranks"):
+        run_download_nse_ranks(sys.argv[2:])
+    elif cmd in ("fix-data", "fixdata", "repair-data"):
+        run_fix_data(sys.argv[2:])
     elif cmd in ("backtest", "bt"):
         run_backtest()
-    elif cmd in ("rolling", "rolling-returns"):
-        run_rolling_returns()
+    elif cmd in ("rolling", "rolling-returns", "compare-n500", "deep-compare"):
+        run_deep_nifty500_compare()
+    elif cmd in ("study-mcap-grid", "mcap-grid"):
+        run_mcap_grid_cli(sys.argv[2:])
     elif cmd in ("live", "long-next", "--long-next"):
         run_long_next()
     elif cmd == "full":
@@ -3880,11 +5015,10 @@ if __name__ == "__main__":
         cli_help()
 
 # ----------------------------- NOTES -----------------------------------------
-# * Survivorship: delisted names are still missing unless listed in delisted_symbols.txt with cached
-#   prices. PIT mode uses listing dates, price-scaled mcap (+ shares cap when known), and a lower
-#   download floor (PIT_UNIVERSE_FLOOR_CR) than the tradable MIN_MCAP_CR. Run --universe-report.
-# * Prices are dividend/split adjusted by Yahoo; Yahoo's Indian data has occasional errors, so
-#   cross-check with a broker API (Kite Connect, Upstox, Angel One) before trusting results.
+# * Universe is today's Nifty 500 (survivorship vs true PIT index membership). Optional extras in
+#   delisted_symbols.txt. PIT tradable filters still use listing dates + price-scaled mcap.
+# * Prices: Yahoo auto_adjust + repair=True, then custom spike/OHLC fix (python main.py fix-data).
+#   Symbols with a remaining >60% one-day move are dropped. Report: output/studies/nifty500_data_repair_report.csv
 # * Taxes are not modelled (STCG on equity delivery is taxed in India).
 # * Don't tune parameters until the equity curve looks good: that is overfitting. Use a
 #   train/test split (e.g. tune on 2010-2018, validate on 2019 onwards).

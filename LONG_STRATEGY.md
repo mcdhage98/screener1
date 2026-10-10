@@ -2,7 +2,7 @@
 
 This is the live book in `main.py`. It tries to buy stocks that are already in a strong uptrend and hold them for months, until that trend breaks. It does not trade dips on a daily schedule.
 
-Prices are daily bars from Yahoo Finance, adjusted for splits and dividends. A decision is made only on the last NSE session of each calendar month. The order is filled at the next session’s open, so the signal never uses a price that was not yet known.
+Prices are daily bars from Yahoo Finance from 2000 onwards, adjusted for splits and dividends (`auto_adjust` plus Yahoo `repair=True`), then cleaned for spike-and-revert / OHLC glitches. A decision is made only on the last NSE session of each calendar month. The order is filled at the next session’s open, so the signal never uses a price that was not yet known.
 
 ## What it is trying to do
 
@@ -12,9 +12,9 @@ That is why holds are measured in months. There is no 50-day exit and no daily t
 
 ## The stock list
 
-The starting list is every NSE equity-series symbol in `EQUITY_L.csv`. Two filters cut it down before any signal is considered.
+The starting list is the **top 800 NSE names by today’s market cap** among stocks with mcap ≥ ₹2,000 crore (see `LIVE_UNIVERSE_TOP_N` / `MIN_MCAP_CR` in `main.py`). That is a survivorship universe relative to true historical membership. History is downloaded from 2000 (or IPO). Symbols with a remaining one-day move above 60% after Yahoo repair and local spike cleanup are dropped.
 
-**Size today, used only to decide what to download.** A symbol is downloaded if its current market cap is at least ₹2,000 crore. After dropping series with a one-day move above 60% (usually a bad print), the test used 999 stocks.
+Chosen after a multi-start grid (`python main.py study-mcap-grid --from-2000`): top **700–800**, **10** slots, and industry cap **3** were the most stable vs Nifty 500 across eras.
 
 **Size on the date of the trade.** A stock can be bought on a past date only if an estimate of its market cap that day is at least ₹2,000 crore. The estimate is today’s market cap scaled by the price change since then. It ignores share issues and buybacks, so it is a rough size check, not a real historical market cap.
 
@@ -47,17 +47,17 @@ There is no pullback rule, no RSI, no ADX, and no requirement of a fresh 52-week
 
 ## If several stocks qualify
 
-The account holds at most 15 positions. Free slots are the difference between 15 and the number already held, after that month’s sales have been flagged.
+The account holds at most **10** positions. Free slots are the difference between 10 and the number already held, after that month’s sales have been flagged.
 
-Holding 15 names, rather than 10, is what keeps the result intact once the list grows to every stock above ₹2,000 crore. With only 10 slots, the ranking fills the book with whichever names just had the strongest recent run, and a longer list changes those names. Fifteen slots rank by **6-month** price momentum (126 trading days), largest first — chosen after comparing 3/6/12-month momentum, blended scores, and rolling Sharpe ranks on the same live book (`python main.py --rank-study`).
+Candidates are sorted by **6-month** price momentum (126 trading days), largest first — chosen after comparing 3/6/12-month momentum, blended scores, and rolling Sharpe ranks (`python main.py study rank`). The book walks down the list and takes names until the free slots are full.
 
-Candidates are sorted by that 6-month return. The book walks down the list and takes names until the free slots are full.
+A concentrated 10-name book beat 15- and 20-name books on median CAGR and Calmar across the mcap grid (starts 2000→2020). Rank still uses roc126; only the slot count and universe width changed.
 
 **Industry cap.** If a stock has an industry label, it is skipped when that industry already has 3 open positions. Stocks with no label are not capped. The cap is checked against positions that are still held, including ones bought in the same month.
 
 ## How much it buys
 
-Each new position is one fifteenth of the account’s equity at the previous close, about 6.7%. Fifteen positions would use the whole account. Equity is cash plus the market value of open holdings. The weight is also capped at 15% of equity, which does not bind at this size.
+Each new position is **one tenth** of the account’s equity at the previous close (10%). Ten positions would use the whole account. Equity is cash plus the market value of open holdings. The weight is also capped at 15% of equity, which does not bind at this size.
 
 The number of shares is that rupee amount divided by the next day’s open, after a 0.15% entry cost, and then rounded down to a whole share. If cash is short, the position is smaller. A buy that cannot afford one share is dropped.
 
@@ -87,15 +87,15 @@ Taxes are not deducted. In India, equity delivery held for 12 months or less is 
 Suppose the last session of the month is 31 March, and the account already holds 12 stocks.
 
 1. For each holding, compare that day’s close with its own 200-day average. Any holding below its average is queued for sale.
-2. Count free slots: 15 minus 12. Sales queued today do not free a slot until they fill, so if none were already empty, there are 3 slots.
-3. Build the list of stocks that pass all six buy rules and are not already held. Sort by 12-month return. Drop any labeled industry that already has 3 holdings.
-4. Queue the top 3 remaining names.
-5. On the next session’s open, sell the queued holdings and buy the queued names, each for about 6.7% of equity, paying 0.15% each way.
+2. Count free slots: 10 minus current holdings. Sales queued today do not free a slot until they fill.
+3. Build the list of stocks that pass all six buy rules and are not already held. Sort by 6-month return. Drop any labeled industry that already has 3 holdings.
+4. Queue names into the free slots.
+5. On the next session’s open, sell the queued holdings and buy the queued names, each for about 10% of equity, paying 0.15% each way.
 6. Until the last session of April, do nothing except watch prices.
 
 ## Cash not in stocks
 
-Cash in the account (the part not invested in the 15 names) earns a daily return each session:
+Cash in the account (the part not invested in the 10 names) earns a daily return each session:
 
 - If **GOLDBEES** closed above its 200-day average **yesterday**, cash gets that day’s gold ETF return.
 - Otherwise cash earns a **6.5%** annual rate (flat daily accrual in the backtest).
@@ -113,23 +113,23 @@ Same stocks, same costs, from the start of 2010 through 9 October 2026. Starting
 | Calmar (CAGR ÷ |drawdown|) | **~1.04** | ~0.85 | ~0.26 | ~0.20 |
 | Final from ₹10 lakh | **~₹9.55 cr** | ~₹5.9 cr | ~₹50 lakh | ~₹66 lakh |
 
-The live book is: 15 names, original buys, rank by **6-month return (roc126)**, SMA200 + 30% peak stop at month-end, plus the gold/debt cash sleeve above.
+The live book is: **top 800** mcap (≥ ₹2,000 cr), **10** names, rank by **6-month return (roc126)**, industry cap **3**, SMA200 + 30% peak stop at month-end, plus the gold/debt cash sleeve above.
 
 ## What this test cannot prove
 
-The universe is still **survivorship-biased**: delisted and merged companies are missing unless you add them to `delisted_symbols.txt` and have price history in `data_cache/`. Treat headline CAGR as an **upper-ish** reading, not a forecast.
+The universe is **survivorship-biased**: it uses **today’s** top-800 mcap ranking (not historical constituents), and delisted/merged names are missing unless added to `delisted_symbols.txt`. Treat headline CAGR as an **upper-ish** reading, not a forecast.
 
 **What the code does for data quality (not a full NSE point-in-time database):**
 
-- **Download** symbols with current mcap ≥ **₹500 cr** (`PIT_UNIVERSE_FLOOR_CR`) plus any `delisted_symbols.txt` entries — so names that later grew into the ₹2,000 cr book can appear in price history.
+- **Download** the live top-800 mcap list from Yahoo from **2000** with `repair=True`, then local spike/OHLC cleanup (`python main.py download` / `fix-data`).
 - **Tradable** only when estimated mcap on that date ≥ **₹2,000 cr**, liquidity passes, and the date is ≥ **126 days** after the NSE **listing date** in `EQUITY_L.csv`.
 - **Estimated mcap** = price-scaled today’s cap, capped with **shares×price** when Yahoo reports shares (still not true historical shares outstanding).
 
-Run `python main.py --universe-report` for PIT vs biased “today mcap” Long and vs Nifty on the same window (`universe_bias_report.csv`).
+Run `python main.py study universe` for PIT vs biased “today mcap” Long and vs Nifty on the same window (`universe_bias_report.csv`).
 
 Optional stress: `exit_stress_slippage=True` adds 3% exit slippage when the next open gaps down more than 8%.
 
-Yahoo’s adjusted Indian prices have bad prints. Symbols with a one-day move over 60% were dropped, which does not catch every error.
+Yahoo’s adjusted Indian prices still have bad prints. After repair, symbols with a remaining one-day move over 60% are dropped; spike-and-revert days are nulled when possible.
 
 No earnings, return on capital, or debt filter is applied. The book can buy a stock that is expensive or deteriorating, as long as the price trend is intact.
 
