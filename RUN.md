@@ -19,7 +19,7 @@ Output: **`output/live/long_next_buys.csv`**
 
 ```bash
 python main.py backtest
-python main.py rolling    # 1–5 year rolling return stats (Long, Current, Nifty 500)
+python main.py rolling    # 1–5 year rolling return stats (Long, Nifty 500)
 ```
 
 Output: **`output/backtest/`**
@@ -27,9 +27,7 @@ Output: **`output/backtest/`**
 | File | Content |
 |------|---------|
 | `trades_long.csv` | Monthly Long trades |
-| `trades.csv` | Daily Current trades |
 | `equity_curve_long.csv` | Long equity |
-| `equity_curve.csv` | Current equity |
 | `equity_curve.png` | Chart |
 | `rolling_returns_summary.csv` | Rolling 1–5y windows (from `python main.py rolling`) |
 | `trades_breakout.csv` | Breakout sleeve (reference) |

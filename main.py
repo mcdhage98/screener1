@@ -1,27 +1,12 @@
 """
-Trend-following pullback strategy: data download + portfolio backtest (NSE stocks, 2010 onwards)
+Monthly Long book: data download + portfolio backtest (NSE stocks, 2010 onwards)
 
 Setup:   pip install yfinance pandas numpy matplotlib
+         pip install nsepython   # optional: python main.py check-data
 Run:     python main.py backtest   |   python main.py live   (see RUN.md)
 
-Rules (signals use the daily close; orders execute at the NEXT day's open, so no look-ahead):
-  Trend filter : Close > SMA200  and  SMA50 > SMA200
-  Entry        : pullback to the 20-day average (Close within PULLBACK_TOL of SMA20, or below it)
-                 while Close is still above SMA50
-  Exit         : Close < SMA50, or Close < trailing stop (highest close since entry - ATR * ATR14)
-  Sizing       : risk RISK_PER_TRADE of equity per trade (distance = ATR * ATR14), capped at MAX_WEIGHT
-  Ranking      : if more signals than free slots, take the strongest 6-month momentum first
-  Sector cap   : at most SECTOR_CAP open positions in one industry (unlabeled stocks are uncapped)
-
-Two books are compared:
-  Current  : daily pullback entries, 2.5 ATR trail or a close under the 50-day average, sector cap 3
-  Long     : act once a month, on names whose estimated size that day is at least
-             ₹2,000 crore. Buy a stock above a rising 200-day average, still within 15% of its
-             52-week high, with a positive 12-month return. Rank free slots by that 12-month return.
-             Sell when a month ends under the 200-day average, or when price is 30% below the
-             high since entry (month-end check). Idle cash earns GOLDBEES when gold is above its
-             200-day average (signal lagged one day), else a 6.5% annual rate. 15 equal weights,
-             sector cap 3.
+Long book (live): month-end signals; orders at the next open (no look-ahead). See LONG_STRATEGY.md.
+Optional `python main.py full` also runs breakout reference strategies (not live).
 """
 
 from pathlib import Path
@@ -57,19 +42,15 @@ MAX_ABS_DAILY_MOVE = 0.60       # drop symbols with a >60% one-day move (usually
 
 # --- Strategy / portfolio ---
 INITIAL_CAPITAL = 1_000_000     # INR
-MAX_POSITIONS = 10              # daily Current book, and the breakout tests
+MAX_POSITIONS = 10              # breakout reference book only
 LONG_POSITIONS = 15             # monthly book: one fifteenth of equity each
 RISK_PER_TRADE = 0.01           # 1% of equity risked per trade
 MAX_WEIGHT = 0.15               # no position above 15% of equity
 ATR_MULT = 3.0                  # trailing stop distance in ATRs
-PULLBACK_TOL = 0.01             # within 1% above SMA20 counts as a pullback
-ADX_PERIOD = 14
-ADX_MIN = 25                    # skip pullbacks unless the trend is at least this strong
 HIGH_WINDOW = 252               # trading days in the 52-week high
 BETA_LOOKBACK = 252             # rolling beta vs Nifty 500 for entry filter
 BETA_MAX = 1.25                 # require beta < this at signal (when filter enabled)
 ATH_PROX_MIN = 0.75             # close >= 75% of series high-water mark (within 25% of ATH)
-PROX_MINS = (0.70, 0.75, 0.80, 0.85, 0.90)
 SECTOR_CAP = 3                  # max open positions in one industry
 LONG_BOOK_LEGACY = dict(        # monthly book without the peak stop (for comparison)
     entry_col="entry_long", rank_col="roc126", exit_mode="sma200",
@@ -86,7 +67,6 @@ BENCH_TICKERS = {
 CHART_BENCHMARKS = ("Nifty 500", "Nifty Smallcap 250")
 # Fixed colors so equity and drawdown panels match line-for-line.
 CHART_SERIES_COLORS = {
-    "Current": "#636363",
     "Long (live)": "#c62828",
     "Long (peak only)": "#ef6c00",
     "Long (no peak stop)": "#6a1b9a",
@@ -353,7 +333,6 @@ def _rolling_sharpe(close, window, rf_daily=None):
 
 def add_indicators(df, mcap_now_cr=None, shares=None, listed_on=None):
     d = df.copy()
-    d["sma20"] = d.Close.rolling(20).mean()
     d["sma50"] = d.Close.rolling(50).mean()
     d["sma100"] = d.Close.rolling(100).mean()
     d["sma150"] = d.Close.rolling(150).mean()
@@ -365,19 +344,7 @@ def add_indicators(df, mcap_now_cr=None, shares=None, listed_on=None):
                     (d.Low - prev_close).abs()], axis=1).max(axis=1)
     d["atr"] = tr.ewm(alpha=1 / 14, adjust=False).mean()
     d["roc126"] = d.Close.pct_change(126)
-    # Wilder ADX: same smoothing as ATR. +DI/-DI give direction; ADX gives strength.
-    up_move = d.High.diff()
-    down_move = -d.Low.diff()
-    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=d.index)
-    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=d.index)
-    smooth = lambda s: s.ewm(alpha=1 / ADX_PERIOD, adjust=False).mean()
-    d["plus_di"] = 100 * smooth(plus_dm) / d["atr"]
-    d["minus_di"] = 100 * smooth(minus_dm) / d["atr"]
-    di_sum = d["plus_di"] + d["minus_di"]
-    dx = 100 * (d["plus_di"] - d["minus_di"]).abs() / di_sum.replace(0, np.nan)
-    d["adx"] = smooth(dx)
     trend = (d.Close > d.sma200) & (d.sma50 > d.sma200)
-    pullback = (d.Close <= d.sma20 * (1 + PULLBACK_TOL)) & (d.Close > d.sma50)
     liquid = (d.Close * d.Volume).rolling(20).median() >= MIN_TURNOVER
     ok = liquid
     if listed_on is not None and pd.notna(listed_on):
@@ -422,12 +389,6 @@ def add_indicators(df, mcap_now_cr=None, shares=None, listed_on=None):
         & (d.Close <= d["sma50"] * 1.30)
         & d["tradable"]
     )
-    d["entry"] = trend & pullback & ok
-    d["entry_adx"] = d["entry"] & (d["adx"] > ADX_MIN) & (d["plus_di"] > d["minus_di"])
-    d["entry_sma50_up"] = d["entry"] & (d["sma50"] > d["sma50"].shift(21))
-    d["entry_recovery"] = d["entry"] & (d.Close > d.Close.shift(1))
-    for level in PROX_MINS:
-        d[f"entry_prox{int(level * 100)}"] = d["entry"] & (d["prox"] >= level)
     return d
 
 
@@ -473,9 +434,8 @@ def build_panels(data, universe=None, mcaps=None, bench_close=None):
         ind[t] = add_indicators(df, m, shares=sh, listed_on=listed)
     tickers = list(ind)
     panel = lambda col: pd.DataFrame({t: ind[t][col] for t in tickers}).sort_index()
-    entry_cols = ["entry", "entry_adx", "entry_sma50_up", "entry_recovery", "entry_long", "entry_long90", "entry_long95",
-                  "entry_long_s126", "entry_long_vol", "entry_long_smooth", "entry_long_quality",
-                  "signal_bo"] + [f"entry_prox{int(level * 100)}" for level in PROX_MINS]
+    entry_cols = ["entry_long", "entry_long90", "entry_long95", "entry_long_s126", "entry_long_vol",
+                  "entry_long_smooth", "entry_long_quality", "signal_bo"]
     P = {c: panel(c) for c in
          ["Open", "Close", "Volume", "sma50", "sma100", "sma150", "sma200", "atr", "roc63", "roc126",
           "roc252", "roc_12_1", "vol126", "mom_adj", "mom_smooth", "prox", "prox_ath",
@@ -669,7 +629,7 @@ def run_long_next(fresh_account=None):
 
 
 def run_backtest():
-    """Long + Current backtest; writes output/backtest/* (trades, equity curves, chart)."""
+    """Long backtest; writes output/backtest/* (trades, equity curve, chart)."""
     _ensure_output_dirs()
     refresh_equity_chart()
 
@@ -678,7 +638,7 @@ def cli_help():
     print(
         """
 Usage:
-  python main.py backtest          Run Long + Current backtest -> output/backtest/
+  python main.py backtest          Run Long backtest -> output/backtest/
   python main.py rolling           Rolling 1–5y return stats -> output/backtest/rolling_returns_summary.csv
   python main.py live            Next Long buy list -> output/live/long_next_buys.csv
   python main.py live --fresh    Same, assuming empty 15-slot book
@@ -695,7 +655,7 @@ Help:
     )
 
 
-def backtest(tickers, P, entry_col="entry", rank_col="roc126", start=None,
+def backtest(tickers, P, entry_col="entry_long", rank_col="roc126", start=None,
              atr_mult=None, risk_mult=None, slot_cap=None, time_stop=None,
              sectors=None, sector_cap=None, exit_mode="trend_pullback", size_mode="risk",
              max_positions=None, end=None, dd_stop=None, rank_pct=None, rs_min=None,
@@ -1207,16 +1167,14 @@ def summarize_rolling_windows(eq, years, name):
 
 
 def run_rolling_returns():
-    """Rolling 1–5y total and annualized returns for Long (live), Current, Nifty 500."""
+    """Rolling 1–5y total and annualized returns for Long (live) and Nifty 500."""
     _ensure_output_dirs()
     data, universe = load_universe()
     bench, _ = _load_nifty500_close(None)
     tickers, P = build_panels(data, universe=universe, bench_close=bench)
     sectors = [load_sectors(tickers).get(t, "") for t in tickers]
     eq_long, _ = backtest(tickers, P, sectors=sectors, **adopted_long_kwargs(P))
-    eq_cur, _ = backtest(tickers, P, sectors=sectors, atr_mult=2.5, sector_cap=SECTOR_CAP)
     eq_long = eq_long.dropna()
-    eq_cur = eq_cur.dropna()
     idx = eq_long.index
     benches = load_benchmarks()
     n500 = benches.get("Nifty 500")
@@ -1228,7 +1186,7 @@ def run_rolling_returns():
 
     horizons = (1, 2, 3, 4, 5)
     rows = []
-    series_map = {"Long (live)": eq_long, "Current": eq_cur}
+    series_map = {"Long (live)": eq_long}
     if n500_eq is not None:
         series_map["Nifty 500"] = n500_eq
     for name, eq in series_map.items():
@@ -1501,17 +1459,6 @@ def hedge_crash_returns(eq, bench_close, index_risk_on):
     out = (1 + hedged_r).cumprod() * eq.iloc[0]
     out.iloc[0] = eq.iloc[0]
     return out
-
-
-def combine_equity_curves(paths_weights):
-    """Monthly-rebalanced mix of saved daily equity CSVs (column 'equity')."""
-    series = []
-    for path, w in paths_weights:
-        s = pd.read_csv(path, index_col=0, parse_dates=True).squeeze()
-        series.append(w * s.pct_change().fillna(0))
-    port_r = pd.concat(series, axis=1).sum(axis=1)
-    eq = (1 + port_r).cumprod() * INITIAL_CAPITAL
-    return eq
 
 
 def _row_from_backtest(label, tickers, P, sectors, kw):
@@ -1836,14 +1783,6 @@ def compare_long_improvements(tickers, P, sectors, save_csv=True):
     hedged = hedge_crash_returns(eq0.dropna(), bench, index_on)
     print(perf_stats(hedged, "hedged post-hoc"))
 
-    if Path("equity_curve_long.csv").exists() and Path("equity_curve.csv").exists():
-        try:
-            mix = combine_equity_curves([("equity_curve_long.csv", 0.5), ("equity_curve.csv", 0.5)])
-            print("\n=== 50/50 Long + Current (saved curves) ===")
-            print(perf_stats(mix.dropna(), "50/50 mix"))
-        except Exception as e:
-            print(f"  combine curves skipped: {e}")
-
     if "Long (adopted)" in stored_full:
         import matplotlib
         matplotlib.use("Agg")
@@ -1954,9 +1893,8 @@ def _plot_equity_and_drawdown(ax0, ax1, eq, label, **plot_kw):
     )
 
 
-def build_live_equity_chart_strategies(cur_eq, eq, eq_peak, eq_legacy, bo_eq, bo_label):
+def build_live_equity_chart_strategies(eq, eq_peak, eq_legacy, bo_eq, bo_label):
     return [
-        ("Current", cur_eq, {"color": CHART_SERIES_COLORS["Current"], "linewidth": 1.3}),
         ("Long (live)", eq, {"color": CHART_SERIES_COLORS["Long (live)"], "linewidth": 2.2}),
         (
             "Long (peak only)",
@@ -2115,7 +2053,7 @@ def _trade_book_section(title, blurb, eq, tr, names):
 
 
 def write_trades_from_sep2024(path="TRADES_FROM_SEP2024.md", start=SEP2024_START):
-    """Regenerate Sep-2024-forward blotter markdown (Long live + Current + benchmarks)."""
+    """Regenerate Sep-2024-forward blotter markdown (Long live + benchmarks)."""
     data, universe = load_universe()
     bench, _ = _load_nifty500_close(None)
     tickers, P = build_panels(data, universe=universe, bench_close=bench)
@@ -2124,18 +2062,12 @@ def write_trades_from_sep2024(path="TRADES_FROM_SEP2024.md", start=SEP2024_START
     n_sym = len(tickers)
 
     eq_long, tr_long = backtest(tickers, P, sectors=sectors, start=start, **adopted_long_kwargs(P))
-    eq_cur, tr_cur = backtest(
-        tickers, P, sectors=sectors, start=start, atr_mult=2.5, sector_cap=SECTOR_CAP
-    )
     benches = load_benchmarks()
     ref = eq_long.dropna()
     last = ref.index[-1].date()
 
     result_rows = []
-    for label, eq, tr in (
-        ("Long (live)", eq_long, tr_long),
-        ("Current", eq_cur, tr_cur),
-    ):
+    for label, eq, tr in (("Long (live)", eq_long, tr_long),):
         p = perf_stats(eq.dropna(), label)
         result_rows.append((
             label,
@@ -2188,11 +2120,6 @@ def write_trades_from_sep2024(path="TRADES_FROM_SEP2024.md", start=SEP2024_START
         "Idle cash earns GOLDBEES when gold is above its 200-day average (lagged one day), else ~6.5% annual."
     )
     out.extend(_trade_book_section("Long book (live)", long_blurb, eq_long, tr_long, names))
-    cur_blurb = (
-        "Can buy any day on a pullback to the 20-day average while the trend is still up. Sell on a close "
-        "under the 50-day average, or under a stop 2.5 ATRs below the highest close since entry."
-    )
-    out.extend(_trade_book_section("Current book", cur_blurb, eq_cur, tr_cur, names))
 
     mcap_s = universe["mcap_cr"] if universe is not None else pd.Series(dtype=float)
     mcap_rows = sorted(
@@ -2672,10 +2599,7 @@ def main():
     long_study(tickers, P, sectors)
     control_study(tickers, P, sectors)
 
-    # Current book trades the daily pullback. The long book only acts on the last
-    # session of the month and sells when that month closes under the 200-day average.
     specs = [
-        ("Current", {"atr_mult": 2.5, "sector_cap": SECTOR_CAP}),
         ("Long", adopted_long_kwargs(P)),
         ("Long (peak, no sleeve)", dict(LONG_BOOK)),
         ("Long (no peak stop)", dict(LONG_BOOK_LEGACY)),
@@ -2757,7 +2681,7 @@ def main():
     calm_name = full.loc[bo_names, "Calmar"].idxmax()
     print(f"\nHighest-return breakout: {best_name}")
     print(f"Highest-Calmar breakout: {calm_name}")
-    for name in ("Current", "Long", best_name):
+    for name in ("Long", best_name):
         tr = runs[name][1]
         print(f"\n=== {name} exits ===")
         print(tr.groupby("reason").agg(n=("pnl", "size"), pnl=("pnl", "sum"), avg_ret=("ret_pct", "mean")).round(2))
@@ -2765,7 +2689,6 @@ def main():
     eq, trades = runs["Long"]  # peak stop + gold/debt cash sleeve
     eq_peak_only, _ = runs["Long (peak, no sleeve)"]
     eq_legacy, _ = runs["Long (no peak stop)"]
-    cur_eq, cur_tr = runs["Current"]
     bo_eq, bo_tr = runs[best_name]
 
     print("\nBenchmarks:")
@@ -2782,7 +2705,7 @@ def main():
     if rows:
         print(pd.DataFrame(rows).set_index("name").round(2))
 
-    yearly = {"Current": yearly_returns(cur_eq), "Long": yearly_returns(eq),
+    yearly = {"Long": yearly_returns(eq),
               "Long (peak, no sleeve)": yearly_returns(eq_peak_only),
               "Long (no peak stop)": yearly_returns(eq_legacy), best_name: yearly_returns(bo_eq)}
     for label in ("Nifty 500", "Nifty 50"):
@@ -2794,17 +2717,15 @@ def main():
     print(pd.DataFrame(yearly))
 
     _ensure_output_dirs()
-    cur_tr.to_csv(OUTPUT_BACKTEST / "trades.csv", index=False)
     trades.to_csv(OUTPUT_BACKTEST / "trades_long.csv", index=False)
     bo_tr.to_csv(OUTPUT_BACKTEST / "trades_breakout.csv", index=False)
-    cur_eq.to_csv(OUTPUT_BACKTEST / "equity_curve.csv", header=["equity"])
     eq.to_csv(OUTPUT_BACKTEST / "equity_curve_long.csv", header=["equity"])
 
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(2, 1, figsize=(11, 8), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
-    chart_specs = build_live_equity_chart_strategies(cur_eq, eq, eq_peak_only, eq_legacy, bo_eq, best_name)
+    chart_specs = build_live_equity_chart_strategies(eq, eq_peak_only, eq_legacy, bo_eq, best_name)
     plot_equity_drawdown_panels(ax[0], ax[1], chart_specs, benches, eq)
     ax[0].legend(fontsize=8, loc="upper left")
     ax[1].legend(fontsize=8, loc="lower left")
@@ -2818,7 +2739,6 @@ def refresh_equity_chart():
     data, universe = load_universe()
     tickers, P = build_panels(data, universe=universe)
     sectors = [load_sectors(tickers).get(t, "") for t in tickers]
-    cur_eq, cur_tr = backtest(tickers, P, sectors=sectors, atr_mult=2.5, sector_cap=SECTOR_CAP)
     eq, trades = backtest(tickers, P, sectors=sectors, **adopted_long_kwargs(P))
     eq_peak, _ = backtest(tickers, P, sectors=sectors, **LONG_BOOK)
     eq_legacy, _ = backtest(tickers, P, sectors=sectors, **LONG_BOOK_LEGACY)
@@ -2834,16 +2754,14 @@ def refresh_equity_chart():
     bo_eq, bo_tr = backtest_breakout(tickers, P, sectors, regime_ok, 5.0, "sma200", True, size_mode="equal")
     benches = load_benchmarks()
     _ensure_output_dirs()
-    cur_tr.to_csv(OUTPUT_BACKTEST / "trades.csv", index=False)
     trades.to_csv(OUTPUT_BACKTEST / "trades_long.csv", index=False)
-    cur_eq.to_csv(OUTPUT_BACKTEST / "equity_curve.csv", header=["equity"])
     eq.to_csv(OUTPUT_BACKTEST / "equity_curve_long.csv", header=["equity"])
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(2, 1, figsize=(11, 8), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
     chart_specs = build_live_equity_chart_strategies(
-        cur_eq, eq, eq_peak, eq_legacy, bo_eq, "BO SMA200 equal, mkt"
+        eq, eq_peak, eq_legacy, bo_eq, "BO SMA200 equal, mkt"
     )
     plot_equity_drawdown_panels(ax[0], ax[1], chart_specs, benches, eq)
     ax[0].legend(fontsize=8, loc="upper left")
@@ -3041,7 +2959,7 @@ def _run_spec_grid(tickers, P, sectors, specs, base_kw, label):
 
 
 def validation_suite(tickers, P, sectors):
-    """Execution realism + peak stop + costs + Current sizing/entries (no auto-adopt)."""
+    """Execution realism + peak stop + costs on live Long (no auto-adopt)."""
     parts = []
     base_long = adopted_long_kwargs(P)
 
@@ -3077,35 +2995,12 @@ def validation_suite(tickers, P, sectors):
     print(cost_df.to_string(index=False))
     parts.append(cost_df)
 
-    print("\n=== 4) Current book — risk per trade & entry filters ===")
-    cur_base = dict(entry_col="entry", atr_mult=2.5, sector_cap=SECTOR_CAP)
-    size_specs = [
-        ("risk 0.5%/trade", dict(risk_per_trade=0.005)),
-        ("risk 0.75%/trade", dict(risk_per_trade=0.0075)),
-        ("risk 1% (live)", dict(risk_per_trade=0.01)),
-        ("risk 1% + sector cap 2", dict(risk_per_trade=0.01, sector_cap=2)),
-        ("risk 1% + equity vol scale", dict(risk_per_trade=0.01, equity_vol_scale=True)),
-    ]
-    size_df = _run_spec_grid(tickers, P, sectors, size_specs, cur_base, "current_size")
-    print(size_df.to_string(index=False))
-    parts.append(size_df)
-
-    entry_specs = [
-        ("pullback baseline", dict(entry_col="entry")),
-        ("+ ADX filter", dict(entry_col="entry_adx")),
-        ("+ SMA50 rising 21d", dict(entry_col="entry_sma50_up")),
-        ("+ recovery day", dict(entry_col="entry_recovery")),
-    ]
-    entry_df = _run_spec_grid(tickers, P, sectors, entry_specs, cur_base, "current_entry")
-    print(entry_df.to_string(index=False))
-    parts.append(entry_df)
-
     rank_path = OUTPUT_STUDIES / "rank_momentum_study.csv"
     if rank_path.exists():
-        print("\n=== 5) Rank momentum study (saved) — prefer both halves Calmar up ===")
+        print("\n=== 4) Rank momentum study (saved) — prefer both halves Calmar up ===")
         print(pd.read_csv(rank_path).to_string(index=False))
     else:
-        print("\n=== 5) Rank momentum — run: python main.py --rank-study ===")
+        print("\n=== 4) Rank momentum — run: python main.py study rank ===")
 
     out = pd.concat(parts, ignore_index=True)
     _ensure_output_dirs()

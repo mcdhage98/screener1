@@ -1,8 +1,6 @@
 # The Long strategy
 
-This is the monthly book in `main.py`. It tries to buy stocks that are already in a strong uptrend and hold them for months, until that trend breaks. It does not trade dips, and it does not use a stop.
-
-The other book in the same file, Current, is a daily pullback trader. This note is only about Long.
+This is the live book in `main.py`. It tries to buy stocks that are already in a strong uptrend and hold them for months, until that trend breaks. It does not trade dips on a daily schedule.
 
 Prices are daily bars from Yahoo Finance, adjusted for splits and dividends. A decision is made only on the last NSE session of each calendar month. The order is filled at the next session’s open, so the signal never uses a price that was not yet known.
 
@@ -10,7 +8,7 @@ Prices are daily bars from Yahoo Finance, adjusted for splits and dividends. A d
 
 A stock that goes on to multiply usually spends a long time trending: price above a rising 200-day average, and not far from its 52-week high. The Long book buys that condition and then gets out of the way. It will sit through ordinary pullbacks. It sells only when a month actually closes below the 200-day average.
 
-That is why holds are measured in months. The Current book sells on the 50-day average, so its typical trade lasts about two weeks. Long has no 50-day exit and no daily trailing stop. It does use a **30% peak stop** checked at month-end (see Sell rules).
+That is why holds are measured in months. There is no 50-day exit and no daily trailing stop. The book does use a **30% peak stop** checked at month-end (see Sell rules).
 
 ## The stock list
 
