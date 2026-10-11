@@ -1,16 +1,11 @@
 ticker,sector,rank_col,rank_value,close,company,signal_date,exec_date,official,fresh_account,free_slots
-CUPID,Fast Moving Consumer Goods,roc126,2.9862807132155007,366.1000061035156,Cupid Limited,2026-10-09,2026-10-12,False,True,15
-CYIENTDLM,,roc126,2.1066710602158483,952.3499755859376,Cyient DLM Limited,2026-10-09,2026-10-12,False,True,15
-BLUSPRING,,roc126,1.3176156295143868,146.9600067138672,Bluspring Enterprises Limited,2026-10-09,2026-10-12,False,True,15
-AVALON,Capital Goods,roc126,1.3052256845132901,2300.5,Avalon Technologies Limited,2026-10-09,2026-10-12,False,True,15
-AEGISLOG,Oil Gas & Consumable Fuels,roc126,1.2880797575307357,1388.9000244140625,Aegis Logistics Limited,2026-10-09,2026-10-12,False,True,15
-DPABHUSHAN,,roc126,1.1753094333225826,2363.800048828125,D. P. Abhushan Limited,2026-10-09,2026-10-12,False,True,15
-AEROFLEX,Capital Goods,roc126,0.9914928258593434,520.5,Aeroflex Industries Limited,2026-10-09,2026-10-12,False,True,15
-APOLLO,Capital Goods,roc126,0.867766679700205,388.3500061035156,Apollo Micro Systems Limited,2026-10-09,2026-10-12,False,True,15
-EMIL,Consumer Services,roc126,0.8665299901060708,191.1699981689453,Electronics Mart India Limited,2026-10-09,2026-10-12,False,True,15
-BLSE,,roc126,0.8111653534156924,149.35000610351562,BLS E-Services Limited,2026-10-09,2026-10-12,False,True,15
-ADOR,,roc126,0.7299952471415052,1479.5999755859375,Ador Welding Limited,2026-10-09,2026-10-12,False,True,15
-DEEPINDS,,roc126,0.6690682889366006,746.4000244140625,Deep Industries Limited,2026-10-09,2026-10-12,False,True,15
-ANTELOPUS,,roc126,0.656390977443609,1101.5,Antelopus Selan Energy Limited,2026-10-09,2026-10-12,False,True,15
-DIVISLAB,Healthcare,roc126,0.5944432149565742,9340.0,Divi's Laboratories Limited,2026-10-09,2026-10-12,False,True,15
-CARTRADE,Consumer Services,roc126,0.5767258166778602,2951.0,Cartrade Tech Limited,2026-10-09,2026-10-12,False,True,15
+CUPID,Fast Moving Consumer Goods,roc126,2.9862807132155007,366.1000061035156,Cupid Limited,2026-10-09 (preview),after month-end,False,True,10
+IBULLSLTD,,roc126,2.2725648172571593,36.619998931884766,Indiabulls Limited,2026-10-09 (preview),after month-end,False,True,10
+MOREPENLAB,,roc126,2.2279918070144906,129.5500030517578,Morepen Laboratories Limited,2026-10-09 (preview),after month-end,False,True,10
+RAYMOND,,roc126,2.220081344873643,1186.5999755859375,Raymond Limited,2026-10-09 (preview),after month-end,False,True,10
+CYIENTDLM,,roc126,2.1066710602158483,952.3499755859376,Cyient DLM Limited,2026-10-09 (preview),after month-end,False,True,10
+WELCORP,Capital Goods,roc126,1.8271354423376365,2640.39990234375,Welspun Corp Limited,2026-10-09 (preview),after month-end,False,True,10
+RPEL,,roc126,1.5769244513779608,1734.0999755859375,Raghav Productivity Enhancers Limited,2026-10-09 (preview),after month-end,False,True,10
+SHILPAMED,Healthcare,roc126,1.5324288144884384,1021.7000122070312,Shilpa Medicare Limited,2026-10-09 (preview),after month-end,False,True,10
+FCL,,roc126,1.5228317874397095,57.93999862670898,Fineotex Chemical Limited,2026-10-09 (preview),after month-end,False,True,10
+IOLCP,,roc126,1.4975166576848724,201.1499938964844,IOL Chemicals and Pharmaceuticals Limited,2026-10-09 (preview),after month-end,False,True,10

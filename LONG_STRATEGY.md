@@ -43,6 +43,8 @@ All of the following must be true on the month-end close. The averages are simpl
 5. **The close is higher than it was 252 trading days ago.** The past year is positive.
 6. **The size and liquidity checks above pass.**
 
+**Market gate (live default):** new buys are blocked when **Nifty 500 is below its own 200-day average** (signal lagged one session). Holdings already in the book are kept and still exit on stock SMA200 / peak stop as usual. Optional study: equal-weight Nifty 500 + Smallcap (`index_gate="n500_smallcap_ew"`). See `adopted_long_kwargs()` in `main.py`.
+
 There is no pullback rule, no RSI, no ADX, and no requirement of a fresh 52-week high. A stock can qualify for many months in a row. If it is already held, it is not bought again.
 
 ## If several stocks qualify
@@ -113,7 +115,7 @@ Same stocks, same costs, from the start of 2010 through 9 October 2026. Starting
 | Calmar (CAGR ÷ |drawdown|) | **~1.04** | ~0.85 | ~0.26 | ~0.20 |
 | Final from ₹10 lakh | **~₹9.55 cr** | ~₹5.9 cr | ~₹50 lakh | ~₹66 lakh |
 
-The live book is: **top 800** mcap (≥ ₹2,000 cr), **10** names, rank by **6-month return (roc126)**, industry cap **3**, SMA200 + 30% peak stop at month-end, plus the gold/debt cash sleeve above.
+The live book is: **top 800** mcap (≥ ₹2,000 cr), **10** names, rank by **6-month return (roc126)**, industry cap **3**, stock SMA200 + 30% peak stop at month-end, **Nifty 500 > SMA200 block-new-buys**, plus the gold/debt cash sleeve above.
 
 ## What this test cannot prove
 

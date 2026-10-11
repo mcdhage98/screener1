@@ -2,7 +2,8 @@
 Monthly Long book: data download + portfolio backtest (India, 2000 onwards)
 
 Live defaults (mcap-grid study): top 800 by today's mcap among ≥ ₹2,000 cr,
-10 slots, industry cap 3. See LONG_STRATEGY.md / RUN.md.
+10 slots, industry cap 3, Nifty 500 > SMA200 block-new-buys.
+See LONG_STRATEGY.md / RUN.md.
 
 Setup:   pip install yfinance pandas numpy matplotlib
 Run:     python main.py download | python main.py fix-data | python main.py backtest | live
@@ -2125,6 +2126,7 @@ def build_panels(data, universe=None, mcaps=None, bench_close=None, indicator_kw
         rm = P["resid_mom"].rank(axis=1, pct=True)
         ms = P["mom_smooth"].rank(axis=1, pct=True)
         P["score_resid"] = 0.7 * rm + 0.3 * ms
+        P["bench_close"] = b
     else:
         P["entry_long_beta125"] = el & False
         P["entry_long_ath25_beta125"] = P["entry_long_ath25"]
@@ -2200,6 +2202,11 @@ def official_long_next_buys(fresh_account=False, save_csv=True):
     i_last = len(dates) - 1
     d_last = dates[i_last]
 
+    # Index buy-gate status (lag-1), same series as adopted_long_kwargs default
+    gate_allows = True
+    if "reentry_ok" in kw:
+        gate_allows = bool(np.asarray(kw["reentry_ok"], dtype=bool)[i_last])
+
     if fresh_account:
         held_j = []
     else:
@@ -2236,6 +2243,8 @@ def official_long_next_buys(fresh_account=False, save_csv=True):
     df = pd.DataFrame(picks)
     print("\n=== Long next buys ===")
     print(f"Live book: {entry_col}, rank {rank_col}, {n_pos} slots, sector cap {sector_cap}")
+    print(f"Index gate: Nifty 500 > SMA200 (lag 1) → "
+          f"{'ALLOWS new buys' if gate_allows else 'BLOCKS new buys'}")
     print(f"Data through: {d_last.date()}  |  {'Fresh account' if fresh_account else f'Incumbent holdings: {len(held_j)}'}")
     print(f"Free slots at next rebalance: {slots}")
     print(f"Last completed month-end signal: {dates[last_me_i].date()}  (buys filled next open)")
@@ -2249,6 +2258,8 @@ def official_long_next_buys(fresh_account=False, save_csv=True):
         )
         print("Next official buys: following session open (usually early next month).")
         print(f"Provisional preview below uses close of {dates[preview_i].date()} (NOT the official month-end).")
+    if not gate_allows:
+        print("\n*** Market gate OFF — do not buy the list below until Nifty 500 > SMA200. ***")
     if df.empty:
         print("No new buys (no free slots or no entry_long qualifiers).")
     else:
@@ -3202,6 +3213,47 @@ def _load_nifty500_close(dates=None):
     return None, ""
 
 
+def _load_nifty_smallcap_close(dates=None):
+    """Nifty Smallcap 250 / CNX Smallcap close (Yahoo)."""
+    for ticker in ("NIFTYSMLCAP250.NS", "^CNXSC"):
+        df = download_one(ticker)
+        if df is not None and len(df) >= 252:
+            s = df.Close.copy()
+            s.index = pd.to_datetime(s.index).tz_localize(None)
+            return s.dropna(), ticker
+    return None, ""
+
+
+def load_n500_smallcap_ew_close():
+    """Equal-weight Nifty 500 + Nifty Smallcap 250 composite level series.
+
+    Daily returns of each leg are averaged 50/50 (on days both exist), then
+    compounded. Used as the live index SMA200 buy-gate series.
+    Returns (composite_close, meta_dict) or (None, meta).
+    """
+    n500, t500 = _load_nifty500_close(None)
+    small, tsc = _load_nifty_smallcap_close(None)
+    meta = {"nifty500": t500 or None, "smallcap": tsc or None}
+    if n500 is None or small is None:
+        meta["error"] = "missing leg"
+        return None, meta
+    a = n500.copy()
+    a.index = pd.to_datetime(a.index).tz_localize(None)
+    b = small.copy()
+    b.index = pd.to_datetime(b.index).tz_localize(None)
+    ret = pd.DataFrame({"n500": a.pct_change(), "small": b.pct_change()}).dropna(how="any")
+    if len(ret) < 252:
+        meta["error"] = "overlap too short"
+        return None, meta
+    lvl = (1.0 + ret.mean(axis=1)).cumprod() * 1000.0
+    meta.update({
+        "start": str(lvl.index.min().date()),
+        "end": str(lvl.index.max().date()),
+        "bars": int(len(lvl)),
+    })
+    return lvl, meta
+
+
 def _slice_dd(eq, start, end):
     sub = eq.loc[start:end].dropna()
     if len(sub) < 2:
@@ -3253,13 +3305,35 @@ def cash_sleeve_with_regime(dates, force_gold_mask, debt_yield=0.065):
     return np.where(mask, gold_ret, base).astype(float)
 
 
-def adopted_long_kwargs(P):
-    """Live Long: peak stop + gold/debt return on all cash daily."""
+def adopted_long_kwargs(P, bench=None, *, index_sma200_block=True,
+                        index_gate="nifty500"):
+    """Live Long default: peak stop + cash sleeve + Nifty 500 > SMA200 block new buys.
+
+    index_gate (when index_sma200_block=True):
+      "nifty500"         — Nifty 500 > SMA200 (live default)
+      "n500_smallcap_ew" — equal-weight Nifty 500 + Smallcap 250 > its SMA200 (study)
+    Signal lagged 1 session. Holdings still exit on stock SMA200 / peak stop.
+    Pass index_sma200_block=False for the ungated baseline (studies only).
+    """
     kw = dict(LONG_BOOK)
     sleeve = cash_sleeve_returns(P["Close"].index)
     if sleeve is not None:
         kw["cash_ret"] = sleeve
         kw["cash_ret_idle_only"] = False
+    if index_sma200_block:
+        gate = str(index_gate or "nifty500").lower()
+        series = None
+        if gate in ("n500_smallcap_ew", "dual", "n500_sc", "smallcap_ew"):
+            series, _meta = load_n500_smallcap_ew_close()
+        if series is None:
+            if bench is None:
+                bench = P.get("bench_close")
+            if bench is None:
+                bench, _ = _load_nifty500_close(None)
+            series = bench
+        if series is not None:
+            below = index_below_sma200(series, P["Close"].index, lag=1)
+            kw["reentry_ok"] = np.logical_not(np.asarray(below, dtype=bool))
     return kw
 
 

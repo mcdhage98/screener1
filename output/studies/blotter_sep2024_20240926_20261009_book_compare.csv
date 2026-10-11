@@ -1,0 +1,3 @@
+Strategy,name,start,end,CAGR %,Vol %,Sharpe,Max DD %,Calmar,Final,Total %,Allow new buys %,Trades,Win %,PF,Avg hold days,Sum trade PnL,Closed PnL,Open MTM PnL,N500 Total %,N500 Max DD %
+Main (SMA200 block),Main (SMA200 block),2024-09-26,2026-10-09,40.52,27.62,1.175,-26.15,1.549,1997741.0,99.77,62.6,30,46.7,3.52,194.0,904854.0,-150589.0,1055443.0,-10.74,-18.84
+Ungated Long,Ungated Long,2024-09-26,2026-10-09,34.99,28.98,0.991,-26.93,1.299,1840904.0,84.09,100.0,33,36.4,2.81,199.0,756194.0,-244126.0,1000320.0,-10.74,-18.84

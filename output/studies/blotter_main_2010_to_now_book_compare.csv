@@ -1,0 +1,3 @@
+Strategy,name,start,end,CAGR %,Vol %,Sharpe,Max DD %,Calmar,Final,Total %,Allow new buys %,Trades,Win %,PF,Avg hold days,Sum trade PnL,Closed PnL,Open MTM PnL,Closed n,Open n,N500 Total %,N500 CAGR %,N500 Max DD %
+Main (Nifty500>SMA200),Main (Nifty500>SMA200),2010-01-04,2026-10-09,39.28,21.59,1.396,-36.27,1.083,258009885.0,25700.99,72.1,144,58.3,8.19,333.0,245688178.0,109945456.0,135742721.0,136,8,400.65,10.09,-38.3
+Ungated Long,Ungated Long,2010-01-04,2026-10-09,33.23,21.53,1.189,-28.82,1.153,122641041.0,12164.1,100.0,170,55.9,5.24,325.0,115915809.0,51404983.0,64510826.0,164,6,400.65,10.09,-38.3
