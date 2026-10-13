@@ -2,7 +2,8 @@
 """Default live Long study: Index>SMA200 block-new-buys (now main.py default).
 
 Same book as main.py adopted Long (peak 30% stop, equal-weight slots, cash sleeve)
-with new month-end buys paused while Nifty 500 is below its SMA200 (lagged 1d).
+with new month-end buys paused while Nifty500 Equal Weight is below its SMA200
+(lagged 1d; CNX500 spliced before Equal Weight history ~2024-06).
 Existing positions still exit on SMA200 / peak stop as usual.
 
 This gate is the live default via main.adopted_long_kwargs(). This file compares
@@ -32,9 +33,9 @@ TAG = "long_sma200_block_main"
 
 
 def sma200_block_kwargs(P, bench=None) -> dict:
-    """Adopted Long kwargs with live default gate (Nifty 500 > SMA200)."""
+    """Adopted Long kwargs with live default gate (Nifty500 EW > SMA200)."""
     return m.adopted_long_kwargs(
-        P, bench=bench, index_sma200_block=True, index_gate="nifty500",
+        P, bench=bench, index_sma200_block=True, index_gate="nifty500_ew",
     )
 
 

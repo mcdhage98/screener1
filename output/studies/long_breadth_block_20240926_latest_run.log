@@ -1,0 +1,26 @@
+=== Live vs SMA200-block vs Breadth≥65%×3d ===
+top_n=750 MIN_MCAP_CR=2000 slots=10
+Meta cache-only: 95 symbols missing mcap (use --sync / --yahoo to pull)
+Mcap ≥ ₹2,000 cr: 1158 names; loading top 750 (mode=cache)
+Cache-only load: 684 OK, 0 missing file, 65 <300 bars, 1 spike-dropped (no download)
+Usable history: 684/750
+Loaded 684/750 symbols (ranked≥floor=1158)
+bench=^CRSLDX symbols=684 2024-09-26 → 2026-10-09
+
+Running Long (adopted = live)…
+  Total 84.09%  CAGR 34.99%  MaxDD -26.93%  Sharpe 0.991  allow_buys 100.0%  trades 33  exits {'below_sma200': 21, 'open_at_end': 7, 'peak_dd': 5}
+
+Running Long + Index>SMA200: block new buys…
+  Total 99.77%  CAGR 40.52%  MaxDD -26.15%  Sharpe 1.175  allow_buys 62.6%  trades 30  exits {'below_sma200': 15, 'open_at_end': 8, 'peak_dd': 7}
+
+Running Long + Breadth≥65%×3d: block new buys…
+  Total 92.35%  CAGR 37.93%  MaxDD -26.15%  Sharpe 1.156  allow_buys 7.5%  trades 19  exits {'below_sma200': 12, 'peak_dd': 4, 'open_at_end': 3}
+
+=== COMPARE (3 strategies) ===
+                             Strategy  Total %  CAGR %  Max DD %  Sharpe  Allow new buys %  Trades  Win %   PF  N500 Total %  Excess CAGR pts  Δ Total pts vs Live  Δ MaxDD pts vs Live Trough date
+                Long (adopted = live)    84.09   34.99    -26.93   0.991             100.0      33   36.4 2.81        -10.74            40.42                 0.00                 0.00  2025-04-09
+  Long + Index>SMA200: block new buys    99.77   40.52    -26.15   1.175              62.6      30   46.7 3.52        -10.74            45.95                15.68                 0.78  2025-03-03
+Long + Breadth≥65%×3d: block new buys    92.35   37.93    -26.15   1.156               7.5      19   36.8 2.72        -10.74            43.36                 8.26                 0.78  2025-03-03
+
+Wrote long_breadth_block_20240926_latest_* under /Users/mayur.c/stocks/screener 1/output/studies
+Helpers: breadth_block_kwargs() / sma200_block_kwargs()

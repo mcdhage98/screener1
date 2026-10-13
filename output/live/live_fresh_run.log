@@ -1,0 +1,28 @@
+Data mode: cache
+Meta cache-only: 95 symbols missing mcap (use --sync / --yahoo to pull)
+Mcap ≥ ₹2,000 cr: 1158 names; loading top 800 (mode=cache)
+Cache-only load: 727 OK, 0 missing file, 71 <300 bars, 2 spike-dropped (no download)
+Usable history: 727/800
+Live universe: top 800 by mcap (≥ ₹2,000 cr) → 727 symbols | book 10 slots | sector_cap 3
+
+=== Long next buys ===
+Live book: entry_long, rank roc126, 10 slots, sector cap 3
+Data through: 2026-10-09  |  Fresh account
+Free slots at next rebalance: 10
+Last completed month-end signal: 2026-10-09  (buys filled next open)
+Next official signal: last session of October 2026 (not finalized yet; latest bar 2026-10-09)
+Next official buys: following session open (usually early next month).
+Provisional preview below uses close of 2026-10-09 (NOT the official month-end).
+    ticker                                   company                     sector  roc126 %  signal_close
+     CUPID                             Cupid Limited Fast Moving Consumer Goods    298.63    366.100006
+ IBULLSLTD                        Indiabulls Limited                               227.26     36.619999
+MOREPENLAB              Morepen Laboratories Limited                               222.80    129.550003
+   RAYMOND                           Raymond Limited                               222.01   1186.599976
+ CYIENTDLM                        Cyient DLM Limited                               210.67    952.349976
+   WELCORP                      Welspun Corp Limited              Capital Goods    182.71   2640.399902
+      RPEL     Raghav Productivity Enhancers Limited                               157.69   1734.099976
+ SHILPAMED                   Shilpa Medicare Limited                 Healthcare    153.24   1021.700012
+       FCL                 Fineotex Chemical Limited                               152.28     57.939999
+     IOLCP IOL Chemicals and Pharmaceuticals Limited                               149.75    201.149994
+
+Saved output/live/long_next_buys.csv

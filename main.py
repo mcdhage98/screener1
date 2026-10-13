@@ -2,7 +2,8 @@
 Monthly Long book: data download + portfolio backtest (India, 2000 onwards)
 
 Live defaults (mcap-grid study): top 800 by today's mcap among ≥ ₹2,000 cr,
-10 slots, industry cap 3, Nifty 500 > SMA200 block-new-buys.
+10 slots, industry cap 3, Nifty500 Equal Weight > SMA200 block-new-buys
+(CNX500 / ^CRSLDX before Equal Weight history exists, ~2024-06).
 See LONG_STRATEGY.md / RUN.md.
 
 Setup:   pip install yfinance pandas numpy matplotlib
@@ -132,6 +133,13 @@ RISK_FREE = 0.06                # for Sharpe
 NSE_LIST_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
 NIFTY500_LIST_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv"
 NIFTY500_LIST_FILE = Path("ind_nifty500list.csv")
+# Official Nifty500 Equal Weight daily closes from NSE index archives (launched ~2024-05-31).
+NIFTY500_EW_INDEX_NAME = "Nifty500 Equal Weight"
+NIFTY500_EW_CACHE = CACHE_DIR / "nifty500_equal_weight.csv"
+NSE_IND_CLOSE_URL = (
+    "https://nsearchives.nseindia.com/content/indices/ind_close_all_{ddmmyyyy}.csv"
+)
+NIFTY500_EW_ARCHIVE_START = "2024-06-03"  # first archive days with this index name
 
 
 # ----------------------------- UNIVERSE --------------------------------------
@@ -2206,6 +2214,15 @@ def official_long_next_buys(fresh_account=False, save_csv=True):
     gate_allows = True
     if "reentry_ok" in kw:
         gate_allows = bool(np.asarray(kw["reentry_ok"], dtype=bool)[i_last])
+    gate_series, gate_meta = load_nifty500_equal_weight_close(refresh=False)
+    gate_px = gate_sma = np.nan
+    if gate_series is not None and len(gate_series):
+        gs = gate_series.reindex(dates).ffill()
+        sma = gs.rolling(200, min_periods=200).mean()
+        # lag-1 signal uses prior session; show that print for clarity
+        lag_i = max(0, i_last - 1)
+        gate_px = float(gs.iloc[lag_i]) if np.isfinite(gs.iloc[lag_i]) else np.nan
+        gate_sma = float(sma.iloc[lag_i]) if np.isfinite(sma.iloc[lag_i]) else np.nan
 
     if fresh_account:
         held_j = []
@@ -2243,8 +2260,16 @@ def official_long_next_buys(fresh_account=False, save_csv=True):
     df = pd.DataFrame(picks)
     print("\n=== Long next buys ===")
     print(f"Live book: {entry_col}, rank {rank_col}, {n_pos} slots, sector cap {sector_cap}")
-    print(f"Index gate: Nifty 500 > SMA200 (lag 1) → "
-          f"{'ALLOWS new buys' if gate_allows else 'BLOCKS new buys'}")
+    print(
+        f"Index gate: Nifty500 Equal Weight > SMA200 (lag 1"
+        f"{'; CNX500 before ' + gate_meta.get('ew_start', '2024-06') if gate_meta else ''}"
+        f") → {'ALLOWS new buys' if gate_allows else 'BLOCKS new buys'}"
+    )
+    if np.isfinite(gate_px) and np.isfinite(gate_sma):
+        print(
+            f"  Gate print (lag 1): EW {gate_px:.2f} vs SMA200 {gate_sma:.2f} "
+            f"({'above' if gate_px > gate_sma else 'below'})"
+        )
     print(f"Data through: {d_last.date()}  |  {'Fresh account' if fresh_account else f'Incumbent holdings: {len(held_j)}'}")
     print(f"Free slots at next rebalance: {slots}")
     print(f"Last completed month-end signal: {dates[last_me_i].date()}  (buys filled next open)")
@@ -2259,7 +2284,7 @@ def official_long_next_buys(fresh_account=False, save_csv=True):
         print("Next official buys: following session open (usually early next month).")
         print(f"Provisional preview below uses close of {dates[preview_i].date()} (NOT the official month-end).")
     if not gate_allows:
-        print("\n*** Market gate OFF — do not buy the list below until Nifty 500 > SMA200. ***")
+        print("\n*** Market gate OFF — do not buy the list below until Nifty500 Equal Weight > SMA200. ***")
     if df.empty:
         print("No new buys (no free slots or no entry_long qualifiers).")
     else:
@@ -3228,7 +3253,7 @@ def load_n500_smallcap_ew_close():
     """Equal-weight Nifty 500 + Nifty Smallcap 250 composite level series.
 
     Daily returns of each leg are averaged 50/50 (on days both exist), then
-    compounded. Used as the live index SMA200 buy-gate series.
+    compounded. Study gate only (not live default).
     Returns (composite_close, meta_dict) or (None, meta).
     """
     n500, t500 = _load_nifty500_close(None)
@@ -3252,6 +3277,187 @@ def load_n500_smallcap_ew_close():
         "bars": int(len(lvl)),
     })
     return lvl, meta
+
+
+def _nse_headers():
+    return {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/csv,*/*",
+        "Referer": "https://www.nseindia.com/",
+    }
+
+
+def _parse_nse_ind_close_csv(text, index_name=NIFTY500_EW_INDEX_NAME):
+    """Return (date, close) from one NSE ind_close_all CSV, or (None, None)."""
+    from io import StringIO
+    df = pd.read_csv(StringIO(text))
+    df.columns = df.columns.str.strip()
+    if "Index Name" not in df.columns or "Closing Index Value" not in df.columns:
+        return None, None
+    m = df[df["Index Name"].astype(str).str.strip() == index_name]
+    if m.empty:
+        return None, None
+    row = m.iloc[0]
+    close = pd.to_numeric(row["Closing Index Value"], errors="coerce")
+    if not np.isfinite(close):
+        return None, None
+    d = pd.to_datetime(str(row.get("Index Date", "")), dayfirst=True, errors="coerce")
+    if pd.isna(d):
+        return None, None
+    return pd.Timestamp(d).normalize(), float(close)
+
+
+def _read_nifty500_ew_cache():
+    path = NIFTY500_EW_CACHE
+    if not path.exists():
+        return pd.Series(dtype=float)
+    df = pd.read_csv(path)
+    if df.empty or "Date" not in df.columns or "Close" not in df.columns:
+        return pd.Series(dtype=float)
+    idx = pd.DatetimeIndex(pd.to_datetime(df["Date"], errors="coerce"))
+    if idx.tz is not None:
+        idx = idx.tz_convert(None)
+    s = pd.Series(
+        pd.to_numeric(df["Close"], errors="coerce").to_numpy(),
+        index=idx.normalize(),
+        dtype=float,
+    ).dropna().sort_index()
+    s = s[~s.index.duplicated(keep="last")]
+    return s
+
+
+def _write_nifty500_ew_cache(series):
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    s = series.dropna().sort_index()
+    s = s[~s.index.duplicated(keep="last")]
+    pd.DataFrame({"Date": s.index.strftime("%Y-%m-%d"), "Close": s.values}).to_csv(
+        NIFTY500_EW_CACHE, index=False,
+    )
+
+
+def refresh_nifty500_equal_weight_cache(start=None, end=None, max_days=None):
+    """Pull Nifty500 Equal Weight closes from NSE ind_close_all archives into cache.
+
+    Incremental: only fetches calendar days after the last cached bar (or from
+    NIFTY500_EW_ARCHIVE_START). Holidays/404s are skipped. Returns cached Series.
+    """
+    import requests
+
+    cached = _read_nifty500_ew_cache()
+    start = pd.Timestamp(start or (
+        (cached.index.max() + pd.Timedelta(days=1)) if len(cached)
+        else NIFTY500_EW_ARCHIVE_START
+    )).normalize()
+    end = pd.Timestamp(end or pd.Timestamp.today()).normalize()
+    if start > end:
+        return cached
+
+    days = pd.bdate_range(start, end)
+    if max_days is not None:
+        days = days[: int(max_days)]
+    got = {}
+    miss = 0
+    for d in days:
+        url = NSE_IND_CLOSE_URL.format(ddmmyyyy=d.strftime("%d%m%Y"))
+        try:
+            r = requests.get(url, headers=_nse_headers(), timeout=25)
+            if r.status_code != 200 or b"<" in r.content[:80]:
+                miss += 1
+                continue
+            dt, close = _parse_nse_ind_close_csv(r.text)
+            if dt is None:
+                miss += 1
+                continue
+            got[pd.Timestamp(dt).normalize()] = close
+        except Exception:
+            miss += 1
+            continue
+    if got:
+        add = pd.Series(got, dtype=float).sort_index()
+        cached = pd.concat([cached, add]).sort_index()
+        cached = cached[~cached.index.duplicated(keep="last")]
+        _write_nifty500_ew_cache(cached)
+        print(
+            f"  Nifty500 Equal Weight cache: +{len(add)} days "
+            f"({cached.index.min().date()} → {cached.index.max().date()}, "
+            f"{len(cached)} bars; {miss} archive misses)"
+        )
+    elif len(cached):
+        print(
+            f"  Nifty500 Equal Weight cache unchanged "
+            f"({cached.index.min().date()} → {cached.index.max().date()}, {len(cached)} bars)"
+        )
+    else:
+        print("  Nifty500 Equal Weight: no archive rows fetched")
+    return cached
+
+
+def load_nifty500_equal_weight_close(refresh=False):
+    """Official Nifty500 Equal Weight close (NSE archives), with CNX500 before it exists.
+
+    Live SMA200 buy-gate series: use Equal Weight when available (~2024-06+);
+    splice Yahoo ^CRSLDX / ^CNX500 levels for earlier dates (return-matched at join).
+    Returns (close_series, meta_dict).
+    """
+    meta = {"index": NIFTY500_EW_INDEX_NAME, "source": "nse_archives"}
+    ew = _read_nifty500_ew_cache()
+    need_refresh = refresh or len(ew) < 200
+    if not need_refresh and len(ew):
+        # Refresh if cache is more than 2 calendar days behind a typical last session.
+        lag = (pd.Timestamp.today().normalize() - ew.index.max()).days
+        need_refresh = lag > 3
+    if need_refresh:
+        try:
+            ew = refresh_nifty500_equal_weight_cache()
+        except Exception as e:
+            meta["refresh_error"] = str(e)
+            if not len(ew):
+                meta["error"] = f"ew unavailable ({e})"
+                return None, meta
+
+    if len(ew) < 200:
+        meta["error"] = f"ew too short ({len(ew)} bars; need 200)"
+        return None, meta
+
+    n500, t500 = _load_nifty500_close(None)
+    if n500 is None:
+        meta["pre_ew"] = None
+        meta.update({
+            "start": str(ew.index.min().date()),
+            "end": str(ew.index.max().date()),
+            "bars": int(len(ew)),
+            "ew_start": str(ew.index.min().date()),
+        })
+        return ew.sort_index(), meta
+
+    a = n500.copy()
+    a.index = pd.to_datetime(a.index).tz_localize(None)
+    a = a.dropna().sort_index()
+    ew = ew.sort_index()
+    join = ew.index.min()
+    # Cap-weighted Nifty 500 (CNX500/^CRSLDX) until Equal Weight begins.
+    pre = a.loc[a.index < join]
+    if len(pre):
+        # Level-match at the last pre day that also has a CNX500 print on/near join.
+        join_n500 = a.asof(join)
+        join_ew = float(ew.iloc[0])
+        if np.isfinite(join_n500) and join_n500 > 0:
+            pre = pre * (join_ew / float(join_n500))
+        combined = pd.concat([pre, ew]).sort_index()
+        combined = combined[~combined.index.duplicated(keep="last")]
+        meta["pre_ew"] = t500 or "CNX500"
+        meta["spliced_at"] = str(join.date())
+    else:
+        combined = ew
+        meta["pre_ew"] = None
+    meta.update({
+        "start": str(combined.index.min().date()),
+        "end": str(combined.index.max().date()),
+        "bars": int(len(combined)),
+        "ew_start": str(ew.index.min().date()),
+        "ew_bars": int(len(ew)),
+    })
+    return combined, meta
 
 
 def _slice_dd(eq, start, end):
@@ -3306,11 +3512,12 @@ def cash_sleeve_with_regime(dates, force_gold_mask, debt_yield=0.065):
 
 
 def adopted_long_kwargs(P, bench=None, *, index_sma200_block=True,
-                        index_gate="nifty500"):
-    """Live Long default: peak stop + cash sleeve + Nifty 500 > SMA200 block new buys.
+                        index_gate="nifty500_ew"):
+    """Live Long default: peak stop + cash sleeve + Nifty500 EW > SMA200 block new buys.
 
     index_gate (when index_sma200_block=True):
-      "nifty500"         — Nifty 500 > SMA200 (live default)
+      "nifty500_ew"      — Nifty500 Equal Weight > SMA200 (live default; CNX500 before ~2024-06)
+      "nifty500"         — cap-weighted Nifty 500 (^CRSLDX / CNX500) > SMA200
       "n500_smallcap_ew" — equal-weight Nifty 500 + Smallcap 250 > its SMA200 (study)
     Signal lagged 1 session. Holdings still exit on stock SMA200 / peak stop.
     Pass index_sma200_block=False for the ungated baseline (studies only).
@@ -3321,9 +3528,11 @@ def adopted_long_kwargs(P, bench=None, *, index_sma200_block=True,
         kw["cash_ret"] = sleeve
         kw["cash_ret_idle_only"] = False
     if index_sma200_block:
-        gate = str(index_gate or "nifty500").lower()
+        gate = str(index_gate or "nifty500_ew").lower()
         series = None
-        if gate in ("n500_smallcap_ew", "dual", "n500_sc", "smallcap_ew"):
+        if gate in ("nifty500_ew", "n500_ew", "equal_weight", "nifty500_equal_weight"):
+            series, _meta = load_nifty500_equal_weight_close(refresh=False)
+        elif gate in ("n500_smallcap_ew", "dual", "n500_sc", "smallcap_ew"):
             series, _meta = load_n500_smallcap_ew_close()
         if series is None:
             if bench is None:

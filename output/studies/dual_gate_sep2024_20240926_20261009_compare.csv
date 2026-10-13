@@ -1,0 +1,4 @@
+name,start,end,CAGR %,Vol %,Sharpe,Max DD %,Calmar,Final,Total %,Strategy,Allow %
+Ungated,2024-09-26,2026-10-09,34.99,28.98,0.991,-26.93,1.299,1840904.0,84.09,Ungated,100.0
+Nifty500-only gate,2024-09-26,2026-10-09,40.52,27.62,1.175,-26.15,1.549,1997741.0,99.77,Nifty500-only gate,62.6
+N500+Smallcap EW gate (NEW default),2024-09-26,2026-10-09,37.06,27.68,1.081,-26.15,1.417,1898888.0,89.89,N500+Smallcap EW gate (NEW default),65.0

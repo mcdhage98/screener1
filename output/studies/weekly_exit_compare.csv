@@ -1,0 +1,13 @@
+Window,Variant,CAGR %,Total %,Max DD %,Sharpe,Calmar,Trades,Win %,PF,Avg hold,N500 Total %,N500 Max DD %,exits
+2021peak,Month-end exits (live),54.77,778.41,-34.08,1.584,1.607,54,55.6,6.73,273.0,37.65,-18.84,"{'below_sma200': 31, 'peak_dd': 14, 'open_at_end': 9}"
+2021peak,Weekly exits (SMA200 + 30% peak),54.17,761.33,-29.57,1.573,1.832,62,51.6,4.82,244.0,37.65,-18.84,"{'peak_dd': 27, 'below_sma200': 25, 'open_at_end': 10}"
+2021peak,Daily exits (SMA200 + 30% peak),58.18,878.98,-25.45,1.668,2.286,72,48.6,5.43,206.0,37.65,-18.84,"{'peak_dd': 38, 'below_sma200': 24, 'open_at_end': 10}"
+2021peak,Month SMA200 + daily 30% peak,56.41,825.43,-30.76,1.621,1.834,66,48.5,4.93,224.0,37.65,-18.84,"{'peak_dd_daily': 49, 'open_at_end': 10, 'below_sma200': 7}"
+2008peak,Month-end exits (live),33.07,21189.08,-32.37,1.206,1.022,161,53.4,7.12,327.0,297.39,-64.26,"{'below_sma200': 129, 'peak_dd': 23, 'open_at_end': 9}"
+2008peak,Weekly exits (SMA200 + 30% peak),33.16,21466.01,-34.39,1.221,0.964,193,52.3,4.8,272.0,297.39,-64.26,"{'below_sma200': 148, 'peak_dd': 35, 'open_at_end': 10}"
+2008peak,Daily exits (SMA200 + 30% peak),34.99,27758.62,-32.66,1.289,1.071,214,50.5,5.72,237.0,297.39,-64.26,"{'below_sma200': 152, 'peak_dd': 52, 'open_at_end': 10}"
+2008peak,Month SMA200 + daily 30% peak,33.05,21124.44,-32.71,1.219,1.01,181,53.0,5.6,291.0,297.39,-64.26,"{'peak_dd_daily': 95, 'below_sma200': 76, 'open_at_end': 10}"
+sep2024peak,Month-end exits (live),33.05,78.77,-22.84,0.987,1.447,32,50.0,2.78,183.0,-10.74,-18.84,"{'below_sma200': 15, 'open_at_end': 9, 'peak_dd': 8}"
+sep2024peak,Weekly exits (SMA200 + 30% peak),35.09,84.38,-22.69,1.05,1.546,35,48.6,3.0,168.0,-10.74,-18.84,"{'below_sma200': 14, 'peak_dd': 11, 'open_at_end': 10}"
+sep2024peak,Daily exits (SMA200 + 30% peak),49.53,126.68,-21.19,1.426,2.337,36,52.8,4.24,157.0,-10.74,-18.84,"{'peak_dd': 17, 'below_sma200': 10, 'open_at_end': 9}"
+sep2024peak,Month SMA200 + daily 30% peak,42.39,105.21,-23.61,1.241,1.795,37,48.6,3.45,147.0,-10.74,-18.84,"{'peak_dd_daily': 24, 'open_at_end': 10, 'below_sma200': 3}"

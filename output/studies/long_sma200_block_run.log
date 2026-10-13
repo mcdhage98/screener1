@@ -1,0 +1,55 @@
+=== Long SMA200 block-new-buys vs live Long ===
+top_n=750 MIN_MCAP_CR=2000 slots=10
+Meta cache-only: 95 symbols missing mcap (use --sync / --yahoo to pull)
+Mcap ≥ ₹2,000 cr: 1158 names; loading top 750 (mode=cache)
+Cache-only load: 684 OK, 0 missing file, 65 <300 bars, 1 spike-dropped (no download)
+Usable history: 684/750
+Loaded 684/750 symbols (ranked≥floor=1158)
+bench=^CRSLDX symbols=684 2024-09-26 → 2026-10-09
+
+Running Long (adopted = live)…
+  Total 84.09%  CAGR 34.99%  MaxDD -26.93%  Sharpe 0.991  allow_buys 100.0%  trades 33  exits {'below_sma200': 21, 'open_at_end': 7, 'peak_dd': 5}
+
+Running Long + Index>SMA200: block new buys…
+  Total 99.77%  CAGR 40.52%  MaxDD -26.15%  Sharpe 1.175  allow_buys 62.6%  trades 30  exits {'below_sma200': 15, 'open_at_end': 8, 'peak_dd': 7}
+
+=== COMPARE ===
+                           Strategy                                name      start        end  CAGR %  Vol %  Sharpe  Max DD %  Calmar     Final  Total %  Allow new buys %  Trades  Win %   PF  Avg hold days  N500 Total %  N500 Max DD %  Excess CAGR pts Trough date  Δ Total pts vs Live  Δ MaxDD pts vs Live
+              Long (adopted = live)               Long (adopted = live) 2024-09-26 2026-10-09   34.99  28.98   0.991    -26.93   1.299 1840904.0    84.09             100.0      33   36.4 2.81          199.0        -10.74         -18.84            40.42  2025-04-09                 0.00                 0.00
+Long + Index>SMA200: block new buys Long + Index>SMA200: block new buys 2024-09-26 2026-10-09   40.52  27.62   1.175    -26.15   1.549 1997741.0    99.77              62.6      30   46.7 3.52          194.0        -10.74         -18.84            45.95  2025-03-03                15.68                 0.78
+
+Entries only in LIVE (16):
+  2026-04-01  ACUTAAS
+  2026-07-01  AEROFLEX
+  2025-04-01  AMBER
+  2025-10-01  APOLLO
+  2025-04-01  AXISCADES
+  2025-03-03  BLUEJET
+  2025-03-03  CARTRADE
+  2026-02-02  HINDCOPPER
+  2025-04-01  JSWHL
+  2025-08-01  KRISHANA
+  2025-04-01  LLOYDSME
+  2026-04-01  NATIONALUM
+  2026-04-01  PFOCUS
+  2026-10-01  SETL
+  2025-03-03  SHAILY
+  2025-04-01  TARIL
+
+Entries only in SMA200-BLOCK (13):
+  2026-08-03  AEROFLEX
+  2025-06-02  APOLLO
+  2025-06-02  AXISCADES
+  2025-06-02  BLUEJET
+  2025-06-02  BSE
+  2025-06-02  FORCEMOT
+  2025-08-01  GALLANTT
+  2026-08-03  GRWRHITECH
+  2026-08-03  IBULLSLTD
+  2025-06-02  KRISHANA
+  2025-11-03  NETWEB
+  2025-06-02  SHAILY
+  2025-06-02  SUVEN
+
+Wrote long_sma200_block_20240926_20261009_* under /Users/mayur.c/stocks/screener 1/output/studies
+Strategy helper: sma200_block_kwargs() in long_sma200_block.py

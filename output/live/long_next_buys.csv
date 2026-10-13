@@ -1,11 +1,11 @@
 ticker,sector,rank_col,rank_value,close,company,signal_date,exec_date,official,fresh_account,free_slots
-CUPID,Fast Moving Consumer Goods,roc126,2.9862807132155007,366.1000061035156,Cupid Limited,2026-10-09 (preview),after month-end,False,True,10
-IBULLSLTD,,roc126,2.2725648172571593,36.619998931884766,Indiabulls Limited,2026-10-09 (preview),after month-end,False,True,10
-MOREPENLAB,,roc126,2.2279918070144906,129.5500030517578,Morepen Laboratories Limited,2026-10-09 (preview),after month-end,False,True,10
-RAYMOND,,roc126,2.220081344873643,1186.5999755859375,Raymond Limited,2026-10-09 (preview),after month-end,False,True,10
-CYIENTDLM,,roc126,2.1066710602158483,952.3499755859376,Cyient DLM Limited,2026-10-09 (preview),after month-end,False,True,10
-WELCORP,Capital Goods,roc126,1.8271354423376365,2640.39990234375,Welspun Corp Limited,2026-10-09 (preview),after month-end,False,True,10
-RPEL,,roc126,1.5769244513779608,1734.0999755859375,Raghav Productivity Enhancers Limited,2026-10-09 (preview),after month-end,False,True,10
-SHILPAMED,Healthcare,roc126,1.5324288144884384,1021.7000122070312,Shilpa Medicare Limited,2026-10-09 (preview),after month-end,False,True,10
-FCL,,roc126,1.5228317874397095,57.93999862670898,Fineotex Chemical Limited,2026-10-09 (preview),after month-end,False,True,10
-IOLCP,,roc126,1.4975166576848724,201.1499938964844,IOL Chemicals and Pharmaceuticals Limited,2026-10-09 (preview),after month-end,False,True,10
+CUPID,Fast Moving Consumer Goods,roc126,2.7672036003122087,353.1000061035156,Cupid Limited,2026-10-13 (preview),after month-end,False,True,10
+WELCORP,Capital Goods,roc126,1.8478528560459138,2730.0,Welspun Corp Limited,2026-10-13 (preview),after month-end,False,True,10
+AEGISLOG,Oil Gas & Consumable Fuels,roc126,1.212692172610443,1392.0,Aegis Logistics Limited,2026-10-13 (preview),after month-end,False,True,10
+SYRMA,Capital Goods,roc126,0.9522597526834826,1694.0,Syrma SGS Technology Limited,2026-10-13 (preview),after month-end,False,True,10
+LAURUSLABS,Healthcare,roc126,0.8768609684077868,2059.39990234375,Laurus Labs Limited,2026-10-13 (preview),after month-end,False,True,10
+RRKABEL,Capital Goods,roc126,0.8765499667898684,2614.199951171875,R R Kabel Limited,2026-10-13 (preview),after month-end,False,True,10
+SANSERA,Automobile and Auto Components,roc126,0.8220705264201198,4254.7998046875,Sansera Engineering Limited,2026-10-13 (preview),after month-end,False,True,10
+REDINGTON,Services,roc126,0.8110046927649386,391.9500122070313,Redington Limited,2026-10-13 (preview),after month-end,False,True,10
+GLAND,Healthcare,roc126,0.7879630984262265,3091.10009765625,Gland Pharma Limited,2026-10-13 (preview),after month-end,False,True,10
+ATHERENERG,Automobile and Auto Components,roc126,0.732112908357591,1494.9000244140625,Ather Energy Limited,2026-10-13 (preview),after month-end,False,True,10

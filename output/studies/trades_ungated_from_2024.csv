@@ -1,0 +1,42 @@
+strategy,ticker,company,entry_date,exit_date,entry_price,exit_price,shares,ret_pct,pnl,reason,sector,days_held
+Ungated,BSE,BSE Limited,2024-02-01,2025-09-01,772.1430883980433,2124.403183412948,128,174.31,172533,peak_dd,Financial Services,578
+Ungated,CUPID,Cupid Limited,2024-02-01,2024-06-03,18.350000381469727,18.899999618530277,5409,2.69,2673,peak_dd,Fast Moving Consumer Goods,123
+Ungated,HBLENGINE,HBL Engineering Limited,2024-02-01,2025-03-03,538.7792077209331,436.4516442776388,184,-19.24,-19097,below_sma200,Capital Goods,396
+Ungated,IFCI,IFCI Limited,2024-02-01,2024-03-01,62.79999923706055,47.0,1580,-25.38,-25224,peak_dd,Financial Services,29
+Ungated,IRFC,Indian Railway Finance Corporation Limited,2024-02-01,2024-11-01,173.88486987279074,152.40208170538332,570,-12.62,-12524,below_sma200,Financial Services,274
+Ungated,ITI,ITI Limited,2024-02-01,2024-10-01,345.20001220703125,256.3500061035156,287,-25.96,-25759,below_sma200,Telecommunication,243
+Ungated,JAIBALAJI,Jai Balaji Industries Limited,2024-02-01,2024-06-03,222.75,178.02000427246094,445,-20.32,-20172,peak_dd,Metals & Mining,123
+Ungated,JPPOWER,Jaiprakash Power Ventures Limited,2024-02-01,2024-04-01,18.649999618530277,15.5,5322,-17.14,-17037,peak_dd,Power,60
+Ungated,MANINDS,Man Industries (India) Limited,2024-02-01,2024-10-01,442.9500122070313,358.0,224,-19.42,-19298,below_sma200,,243
+Ungated,TARIL,Transformers And Rectifiers (India) Limited,2024-02-01,2025-03-03,174.20898352041905,399.5218818649476,569,128.65,127713,below_sma200,Capital Goods,396
+Ungated,HUDCO,Housing & Urban Development Corporation Limited,2024-04-01,2024-11-01,175.7500660481462,206.2471983411116,518,17.0,15501,below_sma200,Financial Services,214
+Ungated,KPIGREEN,KPI Green Energy Limited,2024-05-02,2024-11-01,597.429182405402,524.6437242026768,133,-12.45,-9904,below_sma200,Power,183
+Ungated,SHAKTIPUMP,Shakti Pumps (India) Limited,2024-07-01,2025-03-03,638.7247924804688,815.7441842069215,168,27.33,29373,peak_dd,Capital Goods,245
+Ungated,V2RETAIL,V2 Retail Limited,2024-07-01,2026-03-02,78.69999694824219,190.0,939,140.7,104132,below_sma200,Consumer Services,609
+Ungated,PGEL,PG Electroplast Limited,2024-11-01,2025-07-01,640.3151085329985,753.9612877207446,188,17.4,20972,below_sma200,Consumer Durables,242
+Ungated,SKYGOLD,SKY GOLD AND DIAMONDS LIMITED,2024-11-01,2025-02-01,340.79998779296875,353.6000061035156,354,3.45,4162,peak_dd,Consumer Durables,92
+Ungated,MARINE,Marine Electricals (India) Limited,2024-12-02,2025-02-01,259.3527990945307,216.85065438421665,42,-16.64,-1815,below_sma200,,61
+Ungated,NEULANDLAB,Neuland Laboratories Limited,2024-12-02,2025-03-03,16693.6481374573,10676.362113592437,2,-36.24,-12117,below_sma200,Healthcare,91
+Ungated,PCJEWELLER,PC Jeweller Limited,2024-12-02,2025-03-03,16.690000534057617,11.539999961853027,7780,-31.06,-40396,below_sma200,Consumer Durables,91
+Ungated,BLUEJET,Blue Jet Healthcare Limited,2025-03-03,2025-09-01,788.6611539349343,665.3363869359519,148,-15.89,-18575,below_sma200,Healthcare,182
+Ungated,CARTRADE,Cartrade Tech Limited,2025-03-03,2026-03-02,1528.0,1711.0,76,11.64,13539,below_sma200,Consumer Services,364
+Ungated,AXISCADES,AXISCADES Technologies Limited,2025-04-01,2026-02-02,895.0,1145.0,135,27.55,33337,below_sma200,Capital Goods,307
+Ungated,JSWHL,JSW Holdings Limited,2025-04-01,2025-09-01,22800.0,17470.0,5,-23.61,-26952,below_sma200,,153
+Ungated,SHAILY,Shaily Engineering Plastics Limited,2025-04-01,2026-02-02,1824.3963065855187,1933.2841683717247,71,5.65,7331,below_sma200,Consumer Durables,307
+Ungated,TARIL,Transformers And Rectifiers (India) Limited,2025-04-01,2025-09-01,522.209779624745,492.4035713537242,248,-5.99,-7769,below_sma200,Capital Goods,153
+Ungated,SUVEN,Suven Life Sciences Limited,2025-06-02,2025-10-01,244.5,204.2100067138672,3,-16.73,-123,peak_dd,Healthcare,121
+Ungated,KRISHANA,Krishana Phoschem Limited,2025-08-01,2026-03-02,112.6224946749959,92.13226116135247,1268,-18.44,-26371,below_sma200,,213
+Ungated,APOLLO,Apollo Micro Systems Limited,2025-10-01,2026-03-02,325.0500974524907,228.25960930774824,462,-29.99,-45101,below_sma200,Capital Goods,152
+Ungated,BANCOINDIA,Banco Products (I) Limited,2025-10-01,2026-02-02,800.7795180249099,578.2435000321725,187,-28.01,-42001,below_sma200,Automobile and Auto Components,124
+Ungated,CUPID,Cupid Limited,2025-10-01,2026-10-09,43.321998596191406,366.1000061035156,3473,742.54,1118875,open_at_end,Fast Moving Consumer Goods,373
+Ungated,LUMAXTECH,Lumax Auto Technologies Limited,2025-10-01,2026-10-09,1248.143764404373,1827.4000244140625,120,45.97,68957,open_at_end,Automobile and Auto Components,373
+Ungated,NETWEB,Netweb Technologies India Limited,2025-11-03,2026-10-09,3855.596666427805,4721.60009765625,13,22.09,11091,open_at_end,Information Technology,340
+Ungated,AVANTIFEED,Avanti Feeds Limited,2026-03-02,2026-07-01,1174.7790421878456,921.8964926966784,131,-21.76,-33540,below_sma200,Fast Moving Consumer Goods,121
+Ungated,SANSERA,Sansera Engineering Limited,2026-03-02,2026-10-09,2197.7840232896524,4124.7001953125,70,87.11,134220,open_at_end,Automobile and Auto Components,221
+Ungated,SHRIRAMFIN,Shriram Finance Limited,2026-03-02,2026-10-01,1038.127645301366,973.5,148,-6.51,-10011,below_sma200,Financial Services,213
+Ungated,ACUTAAS,Acutaas Chemicals Limited,2026-04-01,2026-10-09,2624.037155938236,3160.60009765625,53,20.09,27978,open_at_end,Healthcare,191
+Ungated,NATIONALUM,National Aluminium Company Limited,2026-04-01,2026-10-01,393.4848705575685,335.0,357,-15.12,-21269,below_sma200,Metals & Mining,183
+Ungated,PFOCUS,Prime Focus Limited,2026-04-01,2026-06-01,337.0,233.3999938964844,417,-30.95,-43558,peak_dd,Media Entertainment & Publication,61
+Ungated,THANGAMAYL,Thangamayil Jewellery Limited,2026-04-01,2026-10-01,3539.798546770952,5087.5,16,43.29,24556,peak_dd,Consumer Durables,183
+Ungated,AEROFLEX,Aeroflex Industries Limited,2026-07-01,2026-10-09,471.1524813388157,520.5,402,10.14,19240,open_at_end,Capital Goods,100
+Ungated,RPTECH,Rashi Peripherals Limited,2026-08-03,2026-10-09,838.0728598048781,889.7000122070312,23,5.84,1128,open_at_end,,67
