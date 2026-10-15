@@ -23,21 +23,23 @@ Live book defaults: **top 800** by mcap (≥ ₹2,000 cr) · **10 slots** · **s
 | Flag | Mode | Behaviour |
 |------|------|-----------|
 | `--cache` / `--cache-only` | **cache** (default for live/backtest/study) | Local `data_cache/` only — no Yahoo |
-| `--sync` / `--yahoo` | **sync** (default for `download*`) | Use cache; Yahoo only for missing gaps |
-| `--force` / `--resync` / `-f` | **force** | Re-download from Yahoo, ignore usable cache |
+| `--sync` / `--yahoo` | **sync** (default for `download*`) | Cache kept; Yahoo only for missing / truncated starts / **stale ends** (incremental append) |
+| `--force` / `--resync` / `-f` | **force** | Full-history re-download from Yahoo |
 
 ```bash
 python main.py live --fresh              # cache only
 python main.py live --fresh --sync       # fill any missing prices/meta from Yahoo
-python main.py download                  # sync gaps
-python main.py download --force          # full resync
+python main.py sync-prices --end 2026-10-14   # end-fill ALL cached equities (missing dates only)
+python main.py download                  # sync live universe (incremental end-fill)
+python main.py download --force          # full resync (escape hatch)
 python main.py backtest --cache          # explicit cache-only
 ```
 
 ## Data (India — top 800 mcap from 2000)
 
 ```bash
-python main.py download              # sync gaps from Yahoo -> data_cache/
+python main.py sync-prices --end YYYY-MM-DD  # append only missing recent bars for every *.NS.csv
+python main.py download              # sync live universe from Yahoo -> data_cache/
 python main.py download --force      # full resync
 python main.py download --cache      # read cache only
 python main.py fix-data              # re-apply cleanup on cache (no re-download)

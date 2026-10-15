@@ -1,0 +1,53 @@
+End-fill sync: 1807 cached equities → through 2026-10-14 (slack=0d)
+0 current, 1566 end-fill, 241 full (start=2000-01-01, end=2026-10-14, mode=sync, force=False)...
+  full 40/241
+  full 80/241
+  full 120/241
+  full 160/241
+  full 200/241
+  full 240/241
+  full 241/241
+  end-fill 40/1566
+  end-fill 80/1566
+  end-fill 120/1566
+  end-fill 160/1566
+  end-fill 200/1566
+  end-fill 240/1566
+  end-fill 280/1566
+  end-fill 320/1566
+  end-fill 360/1566
+  end-fill 400/1566
+  end-fill 440/1566
+  end-fill 480/1566
+  end-fill 520/1566
+  end-fill 560/1566
+  end-fill 600/1566
+  end-fill 640/1566
+  end-fill 680/1566
+  end-fill 720/1566
+  end-fill 760/1566
+  end-fill 800/1566
+  end-fill 840/1566
+  end-fill 880/1566
+  end-fill 920/1566
+  end-fill 960/1566
+  end-fill 1000/1566
+  end-fill 1040/1566
+  end-fill 1080/1566
+  end-fill 1120/1566
+  end-fill 1160/1566
+  end-fill 1200/1566
+  end-fill 1240/1566
+  end-fill 1280/1566
+  end-fill 1320/1566
+  end-fill 1360/1566
+  end-fill 1400/1566
+  end-fill 1440/1566
+  end-fill 1480/1566
+  end-fill 1520/1566
+  end-fill 1560/1566
+  end-fill 1566/1566
+  dropped 63MOONS: >60% one-day move after repair (max=61%)
+Repair report -> output/studies/nifty500_data_repair_report.csv (1807 rows)
+Loaded 1564 symbols with usable history
+  Nifty500 Equal Weight cache: +1 days (2024-06-03 → 2026-10-14, 586 bars; 0 archive misses)

@@ -1,0 +1,97 @@
+TRADE BLOTTER
+First buys: 1 Dec 2025  →  as of 14 Oct 2026
+Starting capital: ₹10,00,000
+
+SUMMARY
+• Portfolio value: ₹1,612,296  (+61.2%)
+• Approx CAGR: ~65%  ·  Max DD: -18.5%
+• Trades: 17  ·  Open: 9  ·  Closed: 8
+• Invested: ₹1,605,032 (100%)  ·  Cash: ₹7,264 (0.5%)
+
+OPEN POSITIONS
+──────────────
+1. CUPID (Cupid)
+   Bought 2025-12-01 @ ₹66.51  × 1570
+   Now ₹354.6  ·  +433.2%  ·  ₹452,301  ·  ~35%
+
+2. LAURUSLABS (Laurus Labs)
+   Bought 2025-12-01 @ ₹1,034  × 101
+   Now ₹2,037  ·  +97.0%  ·  ₹101,296  ·  ~13%
+
+3. JAYNECOIND (Jayaswal Neco Industries)
+   Bought 2025-12-01 @ ₹71.60  × 1458
+   Now ₹98.97  ·  +38.2%  ·  ₹39,905  ·  ~9%
+
+4. LUMAXTECH (Lumax Auto Technologies)
+   Bought 2025-12-01 @ ₹1,538  × 67
+   Now ₹1,911  ·  +24.3%  ·  ₹24,998  ·  ~8%
+
+5. IBULLSLTD (Indiabulls)
+   Bought 2026-08-03 @ ₹27.02  × 1799
+   Now ₹37.64  ·  +39.3%  ·  ₹19,105  ·  ~4%
+
+6. PRECWIRE (Precision Wires India)
+   Bought 2026-05-04 @ ₹424.3  × 272
+   Now ₹484.2  ·  +14.1%  ·  ₹16,295  ·  ~8%
+
+7. RPTECH (Rashi Peripherals)
+   Bought 2026-08-03 @ ₹838.1  × 157
+   Now ₹906.7  ·  +8.2%  ·  ₹10,774  ·  ~9%
+
+8. POWERINDIA (Hitachi Energy India)
+   Bought 2026-05-04 @ ₹33,872  × 3
+   Now ₹30,390  ·  -10.3%  ·  -₹10,446  ·  ~6%
+
+9. SETL (Standard Engineering Technology)
+   Bought 2026-10-01 @ ₹418.0  × 371
+   Now ₹370.0  ·  -11.5%  ·  -₹17,789  ·  ~9%
+
+CLOSED TRADES
+─────────────
+1. CARTRADE (Cartrade Tech)
+   2025-12-01 → 2026-03-02  (91d)
+   ₹3,119 → ₹1,711  ·  -45.3%  ·  -₹46,690
+
+2. LTF (L&T Finance)
+   2025-12-01 → 2026-04-01  (121d)
+   ₹310.6 → ₹246.3  ·  -20.9%  ·  -₹21,862
+
+3. MUTHOOTFIN (Muthoot Finance)
+   2025-12-01 → 2026-04-01  (121d)
+   ₹3,747 → ₹3,252  ·  -13.5%  ·  -₹13,670
+
+4. TFCILTD (Tourism Finance Corporation of India)
+   2025-12-01 → 2026-04-01  (121d)
+   ₹72.61 → ₹66.04  ·  -9.3%  ·  -₹9,741
+
+5. IMFA (Indian Metals & Ferro Alloys)
+   2025-12-01 → 2026-07-01  (212d)
+   ₹1,339 → ₹1,263  ·  -5.9%  ·  -₹6,193
+
+6. THANGAMAYL (Thangamayil Jewellery)
+   2025-12-01 → 2026-10-01  (304d)
+   ₹3,261 → ₹5,088  ·  +55.5%  ·  ₹58,051
+
+7. AVANTIFEED (Avanti Feeds)
+   2026-05-04 → 2026-07-01  (58d)
+   ₹1,374 → ₹921.9  ·  -33.1%  ·  -₹38,301
+
+8. PFOCUS (Prime Focus)
+   2026-05-04 → 2026-07-01  (58d)
+   ₹309.0 → ₹225.9  ·  -27.1%  ·  -₹3,106
+
+BEST 5
+• CUPID  +433.2%  ₹452,301  (open)
+• LAURUSLABS  +97.0%  ₹101,296  (open)
+• THANGAMAYL  +55.5%  ₹58,051  (closed)
+• JAYNECOIND  +38.2%  ₹39,905  (open)
+• LUMAXTECH  +24.3%  ₹24,998  (open)
+
+WORST 5
+• CARTRADE  -45.3%  -₹46,690  (closed)
+• AVANTIFEED  -33.1%  -₹38,301  (closed)
+• LTF  -20.9%  -₹21,862  (closed)
+• SETL  -11.5%  -₹17,789  (open)
+• MUTHOOTFIN  -13.5%  -₹13,670  (closed)
+
+Note: Backtested. Past performance ≠ future results. Not advice.

@@ -25,8 +25,9 @@ OUTPUT_STUDIES = Path("output/studies")
 
 # Data source mode (prices + mcap meta):
 #   "cache" — local CSVs only (default for live / backtest / study)
-#   "sync"  — use cache when present; Yahoo only for missing / unusable files
-#   "force" — re-download from Yahoo (ignore usable cache)
+#   "sync"  — keep cache; Yahoo only for missing files / truncated starts / stale ends
+#             (end updates always append recent bars — never re-pull full history)
+#   "force" — full Yahoo re-download from START (escape hatch for broken caches)
 DATA_MODE = "cache"
 _DATA_MODE_CACHE = frozenset({"cache", "cached", "cache-only", "offline"})
 _DATA_MODE_SYNC = frozenset({"sync", "yahoo", "from-yahoo", "pull"})
@@ -50,8 +51,8 @@ def parse_data_mode(argv, default="cache"):
     """
     Parse CLI data-source flags from argv.
       --cache / --cached / --cache-only  → cache (local only)
-      --sync / --yahoo / --from-yahoo    → sync (fill gaps from Yahoo)
-      --force / -f / --resync            → force (re-pull everything)
+      --sync / --yahoo / --from-yahoo    → sync (incremental end-fill + missing)
+      --force / -f / --resync            → force (full history re-pull)
     """
     argv = list(argv or [])
     mode = default
@@ -85,7 +86,9 @@ SPIKE_REPAIR_MOVE = 0.35        # null day t when |r_t| exceeds this and next da
 SPIKE_REVERT_MAX = 0.08         # |(1+r_t)*(1+r_{t+1})-1| below this => treat as spike-and-revert
 ISOLATED_SPIKE_MOVE = 0.50      # null isolated bar if |r_t| exceeds this and neighbors look normal
 MIN_BARS = 300                  # minimum history to keep a symbol
-CACHE_START_SLACK_DAYS = 30     # cache is stale if first bar is later than START + this (and listing allows)
+CACHE_START_SLACK_DAYS = 30     # cache needs full re-pull if first bar is later than START + this (and listing allows)
+CACHE_END_SLACK_DAYS = 3        # end is current if last bar within this many calendar days of target (weekends/holidays)
+CACHE_END_OVERLAP_DAYS = 7      # re-fetch this many days before last bar when appending (corp-action adjust)
 
 # --- Strategy / portfolio ---
 INITIAL_CAPITAL = 1_000_000     # INR
@@ -493,8 +496,69 @@ def _cache_first_date(path):
         return None
 
 
+def _cache_target_end(end=END):
+    """Inclusive last session we want cached (normalize to midnight)."""
+    ts = pd.Timestamp(end) if end else pd.Timestamp.now()
+    if getattr(ts, "tzinfo", None) is not None:
+        ts = ts.tz_localize(None)
+    return ts.normalize()
+
+
+def _yahoo_end_exclusive(end=END):
+    """yfinance `end` is exclusive — pass the day after the target session."""
+    target = _cache_target_end(end)
+    return (target + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _india_cache_last_date(path):
+    try:
+        idx = pd.read_csv(path, usecols=[0], index_col=0, parse_dates=True).index
+        if len(idx) == 0:
+            return None
+        return pd.Timestamp(idx.max()).tz_localize(None).normalize()
+    except Exception:
+        return None
+
+
+def _india_cache_needs_end_fill(path, end=END, slack_days=None):
+    """True if last cached bar is behind the target session (minus slack)."""
+    slack = CACHE_END_SLACK_DAYS if slack_days is None else int(slack_days)
+    last = _india_cache_last_date(path)
+    if last is None:
+        return True
+    target = _cache_target_end(end)
+    return last < target - pd.Timedelta(days=slack)
+
+
+def _incremental_start(path, fallback_start=START, overlap_days=None):
+    """Yahoo start date for end-fill: last bar minus overlap (corp-action adjust)."""
+    overlap = CACHE_END_OVERLAP_DAYS if overlap_days is None else int(overlap_days)
+    last = _india_cache_last_date(path)
+    if last is None:
+        return fallback_start
+    start = last - pd.Timedelta(days=overlap)
+    return start.strftime("%Y-%m-%d")
+
+
+def _merge_ohlcv_cache(existing, new_df):
+    """Append/override overlapping dates; keep newest Yahoo bars on collide."""
+    if existing is None or getattr(existing, "empty", True):
+        return new_df
+    if new_df is None or getattr(new_df, "empty", True):
+        return existing
+    a = _clean(existing)
+    b = _clean(new_df)
+    if a.empty:
+        return b
+    if b.empty:
+        return a
+    combined = pd.concat([a, b])
+    combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+    return combined
+
+
 def _india_cache_is_usable(path, start=START, listing=None, min_bars=MIN_BARS):
-    """True if cache CSV is good enough to skip Yahoo.
+    """True if cache CSV has enough history / start coverage (end freshness separate).
 
     Rules:
     - File must exist with >= min_bars.
@@ -502,7 +566,7 @@ def _india_cache_is_usable(path, start=START, listing=None, min_bars=MIN_BARS):
       Used to detect truncated caches that need a deeper re-download.
     - If listing is unknown: trust any adequate cache. Requiring START=2000 for
       post-IPO names with no listing caused endless re-downloads of the same CSVs.
-    Use force=True to refresh regardless.
+    End-of-series freshness is handled by _india_cache_needs_end_fill (sync appends).
     """
     if not path.exists():
         return False
@@ -526,12 +590,14 @@ def _yf_download_ohlcv(ysym, start=START, end=END):
 
     yfinance often prints a false 'Failed download' / IntCastingNaNError for Indian
     names when repair=True; stderr is silenced and we retry without repair.
+    `end` is treated as an inclusive session date (converted to exclusive for Yahoo).
     """
     import yfinance as yf
     import warnings
     import os
     from contextlib import redirect_stderr
-    from io import StringIO
+
+    y_end = _yahoo_end_exclusive(end) if end else None
 
     def _one(repair):
         with warnings.catch_warnings():
@@ -539,7 +605,7 @@ def _yf_download_ohlcv(ysym, start=START, end=END):
             with open(os.devnull, "w") as devnull, redirect_stderr(devnull):
                 try:
                     return yf.download(
-                        ysym, start=start, end=end, auto_adjust=True, repair=repair,
+                        ysym, start=start, end=y_end, auto_adjust=True, repair=repair,
                         progress=False,
                     )
                 except Exception:
@@ -551,50 +617,73 @@ def _yf_download_ohlcv(ysym, start=START, end=END):
     return df
 
 
-def download_one(symbol, start=START, end=END, force=False, listing=None):
+def download_one(symbol, start=START, end=END, force=False, listing=None,
+                 end_slack_days=None):
     """Single symbol (equities use .NS suffix; indices like ^NSEI as-is). Cached as CSV.
 
-    Honours DATA_MODE: cache → never Yahoo; sync → Yahoo only if unusable;
-    force / force=True → always Yahoo.
+    Honours DATA_MODE:
+      cache → never Yahoo
+      sync  → full pull only if missing/unusable; else incremental end-fill if stale
+      force → full Yahoo re-download from start
     """
     CACHE_DIR.mkdir(exist_ok=True)
     ysym = _yf_equity(symbol)
     f = _cache_file(ysym)
     do_force = force or DATA_MODE == "force"
-    if not do_force and f.exists():
-        # Prefer any adequate local file in cache/sync before hitting Yahoo
-        if DATA_MODE == "cache" or _india_cache_is_usable(f, start=start, listing=listing):
-            try:
-                df = pd.read_csv(f, index_col=0, parse_dates=True)
-                if len(df) >= MIN_BARS or DATA_MODE == "cache":
-                    return df if len(df) else None
-            except Exception:
-                if DATA_MODE == "cache":
-                    return None
     if DATA_MODE == "cache" and not do_force:
-        return None
-    df = _yf_download_ohlcv(ysym, start=start, end=end)
-    if df is None or df.empty:
-        # Fall back to whatever is on disk
         if f.exists():
             try:
-                return pd.read_csv(f, index_col=0, parse_dates=True)
+                df = pd.read_csv(f, index_col=0, parse_dates=True)
+                return df if len(df) else None
             except Exception:
                 return None
         return None
-    df, _ = fix_ohlcv(df)
+
+    if do_force or not f.exists() or not _india_cache_is_usable(f, start=start, listing=listing):
+        raw = _yf_download_ohlcv(ysym, start=start, end=end)
+        if raw is None or raw.empty:
+            if f.exists():
+                try:
+                    return pd.read_csv(f, index_col=0, parse_dates=True)
+                except Exception:
+                    return None
+            return None
+        df, _ = fix_ohlcv(raw)
+        if df is None or df.empty:
+            return None
+        df.to_csv(f)
+        return df
+
+    # Structurally OK — append only if end is stale
+    if not _india_cache_needs_end_fill(f, end=end, slack_days=end_slack_days):
+        try:
+            return pd.read_csv(f, index_col=0, parse_dates=True)
+        except Exception:
+            return None
+
+    try:
+        existing = pd.read_csv(f, index_col=0, parse_dates=True)
+    except Exception:
+        existing = None
+    raw = _yf_download_ohlcv(ysym, start=_incremental_start(f, fallback_start=start), end=end)
+    if raw is None or raw.empty:
+        return existing
+    merged = _merge_ohlcv_cache(existing, raw)
+    df, _ = fix_ohlcv(merged)
     if df is None or df.empty:
-        return None
+        return existing
     df.to_csv(f)
     return df
 
 
 def download_many(symbols, batch=20, start=START, end=END, force=False, listings=None,
-                  sequential=True):
+                  sequential=True, end_slack_days=None):
     """
     Download adjusted daily OHLCV for NSE symbols with yfinance repair=True,
     then custom fix_ohlcv. Cached per symbol as SYMBOL.NS.csv.
-    Respects DATA_MODE (cache / sync / force).
+
+    sync: missing/truncated → full history; end-stale → incremental append only.
+    force: full history re-pull for every symbol.
     """
     import yfinance as yf
     CACHE_DIR.mkdir(exist_ok=True)
@@ -605,69 +694,110 @@ def download_many(symbols, batch=20, start=START, end=END, force=False, listings
     if DATA_MODE == "cache" and not do_force:
         print(f"Data mode=cache: loading {len(symbols)} symbols from disk (no Yahoo)")
         return _load_cached_ohlcv(symbols, listings=listings)
-    need = []
+
+    need_full, need_end = [], []
     for s in symbols:
         f = _cache_file(yf_syms[s])
         if do_force or not _india_cache_is_usable(f, start=start, listing=listings.get(s)):
-            need.append(s)
-    print(f"{len(symbols) - len(need)} cached OK, downloading {len(need)} "
-          f"(start={start}, repair=True, mode={DATA_MODE}, force={do_force})...")
+            need_full.append(s)
+        elif _india_cache_needs_end_fill(f, end=end, slack_days=end_slack_days):
+            need_end.append(s)
+
+    print(
+        f"{len(symbols) - len(need_full) - len(need_end)} current, "
+        f"{len(need_end)} end-fill, {len(need_full)} full "
+        f"(start={start}, end={_cache_target_end(end).date()}, "
+        f"mode={DATA_MODE}, force={do_force})..."
+    )
 
     repair_rows = []
 
-    def _save_fixed(s, raw_df):
+    def _save_fixed(s, raw_df, merge_existing=False):
         try:
+            f = _cache_file(yf_syms[s])
+            if merge_existing and f.exists():
+                try:
+                    existing = pd.read_csv(f, index_col=0, parse_dates=True)
+                except Exception:
+                    existing = None
+                raw_df = _merge_ohlcv_cache(existing, raw_df)
             df, stats = fix_ohlcv(raw_df)
             if df is None or df.empty:
                 repair_rows.append({"symbol": s, "bars_nulled": stats.get("bars_nulled", 0),
                                     "ohlc_clamped": stats.get("ohlc_clamped", 0),
                                     "status": "empty_after_fix"})
                 return
-            df.to_csv(_cache_file(yf_syms[s]))
+            df.to_csv(f)
             repair_rows.append({"symbol": s, "bars_nulled": stats["bars_nulled"],
-                                "ohlc_clamped": stats["ohlc_clamped"], "status": "ok"})
+                                "ohlc_clamped": stats["ohlc_clamped"],
+                                "status": "ok_endfill" if merge_existing else "ok"})
         except Exception as e:
             repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
                                 "status": f"fix_error:{e}"})
 
-    if sequential:
-        for i, s in enumerate(need, 1):
-            try:
-                raw = _yf_download_ohlcv(yf_syms[s], start=start, end=end)
-                if raw is None or raw.empty:
-                    repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
-                                        "status": "download_empty"})
-                else:
-                    _save_fixed(s, raw)
-            except Exception as e:
-                repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
-                                    "status": f"download_error:{e}"})
-            if i % 25 == 0 or i == len(need):
-                print(f"  {i}/{len(need)}", flush=True)
-    else:
-        for k in range(0, len(need), batch):
-            chunk = need[k:k + batch]
-            try:
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    raw = yf.download(
-                        [yf_syms[s] for s in chunk], start=start, end=end, auto_adjust=True,
-                        repair=True, progress=False, group_by="ticker", threads=True,
-                    )
-            except Exception as e:
-                print(f"  batch failed: {e}", flush=True)
-                continue
-            for s in chunk:
+    def _pull_list(syms, full):
+        if not syms:
+            return
+        label = "full" if full else "end-fill"
+        if sequential:
+            for i, s in enumerate(syms, 1):
                 try:
-                    piece = raw[yf_syms[s]].copy() if len(chunk) > 1 else raw.copy()
-                    if piece is None or piece.empty:
-                        piece = _yf_download_ohlcv(yf_syms[s], start=start, end=end)
-                    _save_fixed(s, piece)
+                    y_start = start if full else _incremental_start(
+                        _cache_file(yf_syms[s]), fallback_start=start)
+                    raw = _yf_download_ohlcv(yf_syms[s], start=y_start, end=end)
+                    if raw is None or raw.empty:
+                        repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
+                                            "status": "download_empty"})
+                    else:
+                        _save_fixed(s, raw, merge_existing=not full)
                 except Exception as e:
                     repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
-                                        "status": f"parse_error:{e}"})
-            print(f"  {min(k + batch, len(need))}/{len(need)}", flush=True)
+                                        "status": f"download_error:{e}"})
+                if i % 25 == 0 or i == len(syms):
+                    print(f"  {label} {i}/{len(syms)}", flush=True)
+        else:
+            y_end = _yahoo_end_exclusive(end) if end else None
+            for k in range(0, len(syms), batch):
+                chunk = syms[k:k + batch]
+                # Batch end-fill uses the oldest incremental start in the chunk
+                if full:
+                    y_start = start
+                else:
+                    starts = [
+                        pd.Timestamp(_incremental_start(_cache_file(yf_syms[s]), fallback_start=start))
+                        for s in chunk
+                    ]
+                    y_start = min(starts).strftime("%Y-%m-%d")
+                try:
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        raw = yf.download(
+                            [yf_syms[s] for s in chunk], start=y_start, end=y_end,
+                            auto_adjust=True, repair=True, progress=False,
+                            group_by="ticker", threads=True,
+                        )
+                except Exception as e:
+                    print(f"  {label} batch failed: {e}", flush=True)
+                    continue
+                for s in chunk:
+                    try:
+                        piece = raw[yf_syms[s]].copy() if len(chunk) > 1 else raw.copy()
+                        if piece is None or piece.empty:
+                            piece = _yf_download_ohlcv(
+                                yf_syms[s],
+                                start=(start if full else _incremental_start(
+                                    _cache_file(yf_syms[s]), fallback_start=start)),
+                                end=end,
+                            )
+                        _save_fixed(s, piece, merge_existing=not full)
+                    except Exception as e:
+                        repair_rows.append({"symbol": s, "bars_nulled": 0, "ohlc_clamped": 0,
+                                            "status": f"parse_error:{e}"})
+                print(f"  {label} {min(k + batch, len(syms))}/{len(syms)}", flush=True)
+
+    _pull_list(need_full, full=True)
+    _pull_list(need_end, full=False)
 
     data = {}
     for s in symbols:
@@ -695,6 +825,35 @@ def download_many(symbols, batch=20, start=START, end=END, force=False, listings
         rep.to_csv(rep_path, index=False)
         print(f"Repair report -> {rep_path} ({len(rep)} rows)")
     print(f"Loaded {len(data)} symbols with usable history")
+    return data
+
+
+def sync_all_cached_prices(end=None, end_slack_days=0, sequential=True, batch=40):
+    """Incremental end-fill for every SYMBOL.NS.csv already in data_cache/.
+
+    Only pulls missing recent bars (plus short overlap). Does not re-download
+    full history unless a file is missing/unusable (handled inside download_many).
+    """
+    set_data_mode("sync")
+    target = _cache_target_end(end)
+    files = sorted(CACHE_DIR.glob("*.NS.csv"))
+    symbols = [p.name[:-7] for p in files]  # strip .NS.csv
+    print(f"End-fill sync: {len(symbols)} cached equities → through {target.date()} "
+          f"(slack={end_slack_days}d)")
+    data = download_many(
+        symbols, start=START, end=target.strftime("%Y-%m-%d"), force=False,
+        sequential=sequential, batch=batch, end_slack_days=end_slack_days,
+    )
+    # Benchmarks / indices commonly used
+    for idx in ("^NSEI", "^CRSLDX", "^CNX500", "NIFTYSMLCAP250.NS"):
+        try:
+            download_one(idx, end=target.strftime("%Y-%m-%d"), end_slack_days=end_slack_days)
+        except Exception as e:
+            print(f"  index {idx}: {e}")
+    try:
+        refresh_nifty500_equal_weight_cache(end=target.strftime("%Y-%m-%d"))
+    except Exception as e:
+        print(f"  EW refresh: {e}")
     return data
 
 
@@ -2326,8 +2485,9 @@ def cli_help():
     print(
         """
 Usage:
-  python main.py download          Sync live universe gaps from Yahoo -> data_cache/
-  python main.py download --force  Resync: re-download all live-universe prices + meta
+  python main.py download          Sync live universe (incremental end-fill + missing)
+  python main.py sync-prices [--end YYYY-MM-DD]   End-fill ALL cached equities (missing dates only)
+  python main.py download --force  Full-history resync (escape hatch)
   python main.py download --cache  Load cache only (no Yahoo)
   python main.py download-ranks 500 1000 [--sync|--force|--cache]
   python main.py fix-data          Re-run spike/OHLC cleanup on cached files
@@ -2339,8 +2499,8 @@ Usage:
 
 Data source flags (prices + mcap meta):
   --cache / --cache-only   local CSVs only (default for live/backtest/study)
-  --sync  / --yahoo        use cache; pull from Yahoo only for missing gaps
-  --force / --resync / -f  ignore usable cache; re-download from Yahoo
+  --sync  / --yahoo        keep cache; Yahoo for missing / truncated / stale ends (append only)
+  --force / --resync / -f  full-history re-download from Yahoo
 
   python main.py backtest-us       US Long backtest (top mcap list, ~$240M floor)
   python main.py download-us       Top 1000 US by mcap, Yahoo history from 2010
@@ -5214,6 +5374,7 @@ if __name__ == "__main__":
     _dl_cmds = {
         "download", "download-nifty500", "download-n500",
         "download-ranks", "download-nse-ranks", "download-mcap-ranks",
+        "sync-prices", "end-fill", "sync-cache",
         "download-us", "us-download", "import-us", "us-import", "regenerate-us",
     }
     parse_data_mode(sys.argv[2:], default="sync" if cmd in _dl_cmds else "cache")
@@ -5224,6 +5385,19 @@ if __name__ == "__main__":
         run_download_nifty500(sys.argv[2:])
     elif cmd in ("download-ranks", "download-nse-ranks", "download-mcap-ranks"):
         run_download_nse_ranks(sys.argv[2:])
+    elif cmd in ("sync-prices", "end-fill", "sync-cache"):
+        # Incremental: only missing recent bars for every *.NS.csv in data_cache/
+        _argv = list(sys.argv[2:])
+        _end = None
+        _slack = 0
+        for i, a in enumerate(_argv):
+            if a in ("--end", "-e") and i + 1 < len(_argv):
+                _end = _argv[i + 1]
+            if a in ("--slack",) and i + 1 < len(_argv):
+                _slack = int(_argv[i + 1])
+        if _end is None:
+            _end = pd.Timestamp.now().strftime("%Y-%m-%d")
+        sync_all_cached_prices(end=_end, end_slack_days=_slack, sequential=False, batch=40)
     elif cmd in ("fix-data", "fixdata", "repair-data"):
         run_fix_data(sys.argv[2:])
     elif cmd in ("backtest", "bt"):
