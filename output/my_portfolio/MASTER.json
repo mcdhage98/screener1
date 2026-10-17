@@ -1,0 +1,160 @@
+{
+  "name": "Mayur live Long book",
+  "status": "RUNNING",
+  "is_master": true,
+  "started_investing": "2026-10-15",
+  "signal_basis": "2026-10-14",
+  "signal_source": "python main.py live --fresh (Oct 14 preview close)",
+  "starting_capital_inr": 500000,
+  "slots": 10,
+  "sizing": "actual_fills",
+  "currency": "INR",
+  "strategy": "India Monthly Long (roc126 / entry_long), personal live book",
+  "cash_inr": 15754.4,
+  "invested_inr": 484245.6,
+  "holdings": [
+    {
+      "ticker": "CUPID",
+      "company": "Cupid Limited",
+      "sector": "Fast Moving Consumer Goods",
+      "status": "OPEN",
+      "signal_date": "2026-10-14",
+      "entry_date": "2026-10-15",
+      "entry_price": 350.5,
+      "shares": 141,
+      "cost_value": 49420.5,
+      "target_slot_inr": 50000.0,
+      "notes": "Actual broker fill on 2026-10-15 (signal 2026-10-14)"
+    },
+    {
+      "ticker": "CYIENTDLM",
+      "company": "Cyient DLM Limited",
+      "sector": null,
+      "status": "OPEN",
+      "signal_date": "2026-10-14",
+      "entry_date": "2026-10-15",
+      "entry_price": 1010.0,
+      "shares": 48,
+      "cost_value": 48480.0,
+      "target_slot_inr": 50000.0,
+      "notes": "Actual broker fill on 2026-10-15 (signal 2026-10-14)"
+    },
+    {
+      "ticker": "FCL",
+      "company": "Fineotex Chemical Limited",
+      "sector": null,
+      "status": "OPEN",
+      "signal_date": "2026-10-14",
+      "entry_date": "2026-10-15",
+      "entry_price": 58.15,
+      "shares": 833,
+      "cost_value": 48438.95,
+      "target_slot_inr": 50000.0,
+      "notes": "Actual broker fill on 2026-10-15 (signal 2026-10-14)"
+    },
+    {
+      "ticker": "IBULLSLTD",
+      "company": "Indiabulls Limited",
+      "sector": null,
+      "status": "OPEN",
+      "signal_date": "2026-10-14",
+      "entry_date": "2026-10-15",
+      "entry_price": 36.27,
+      "shares": 1315,
+      "cost_value": 47695.05,
+      "target_slot_inr": 50000.0,
+      "notes": "Actual broker fill on 2026-10-15 (signal 2026-10-14)"
+    },
+    {
+      "ticker": "MARINE",
+      "company": "Marine Electricals (India) Limited",
+      "sector": null,
+      "status": "OPEN",
+      "signal_date": "2026-10-14",
+      "entry_date": "2026-10-15",
+      "entry_price": 441.5,
+      "shares": 106,
+      "cost_value": 46799.0,
+      "target_slot_inr": 50000.0,
+      "notes": "Actual broker fill on 2026-10-15 (signal 2026-10-14)"
+    },
+    {
+      "ticker": "RAYMOND",
+      "company": "Raymond Limited",
+      "sector": null,
+      "status": "OPEN",
+      "signal_date": "2026-10-14",
+      "entry_date": "2026-10-15",
+      "entry_price": 1138.0,
+      "shares": 42,
+      "cost_value": 47796.0,
+      "target_slot_inr": 50000.0,
+      "notes": "Actual broker fill on 2026-10-15 (signal 2026-10-14)"
+    },
+    {
+      "ticker": "RPEL",
+      "company": "Raghav Productivity Enhancers Limited",
+      "sector": null,
+      "status": "OPEN",
+      "signal_date": "2026-10-14",
+      "entry_date": "2026-10-15",
+      "entry_price": 1778.59,
+      "shares": 26,
+      "cost_value": 46243.4,
+      "target_slot_inr": 50000.0,
+      "notes": "Actual broker fill on 2026-10-15 (signal 2026-10-14)"
+    },
+    {
+      "ticker": "SKYGOLD",
+      "company": "SKY GOLD AND DIAMONDS LIMITED",
+      "sector": "Consumer Durables",
+      "status": "OPEN",
+      "signal_date": "2026-10-14",
+      "entry_date": "2026-10-15",
+      "entry_price": 999.02,
+      "shares": 51,
+      "cost_value": 50950.0,
+      "target_slot_inr": 50000.0,
+      "notes": "Actual broker fill on 2026-10-15 (signal 2026-10-14)"
+    },
+    {
+      "ticker": "WELCORP",
+      "company": "Welspun Corp Limited",
+      "sector": "Capital Goods",
+      "status": "OPEN",
+      "signal_date": "2026-10-14",
+      "entry_date": "2026-10-15",
+      "entry_price": 2516.1,
+      "shares": 19,
+      "cost_value": 47805.9,
+      "target_slot_inr": 50000.0,
+      "notes": "Actual broker fill on 2026-10-15 (signal 2026-10-14)"
+    },
+    {
+      "ticker": "MOREPENLAB",
+      "company": "Morepen Laboratories Limited",
+      "sector": null,
+      "status": "OPEN",
+      "signal_date": "2026-10-14",
+      "entry_date": "2026-10-15",
+      "entry_price": 125.6,
+      "shares": 403,
+      "cost_value": 50616.8,
+      "target_slot_inr": 50000.0,
+      "notes": "Actual broker fill on 2026-10-15 (signal 2026-10-14)"
+    }
+  ],
+  "closed_trades": [],
+  "history": [
+    {
+      "date": "2026-10-15",
+      "event": "PORTFOLIO_START",
+      "detail": "Started investing; 10 names from Oct 14 fresh live preview, \u20b95L equal weight"
+    },
+    {
+      "date": "2026-10-16",
+      "event": "FILLS_UPDATED",
+      "detail": "Replaced estimated Oct-14 closes with actual broker entry prices and invested amounts"
+    }
+  ]
+}

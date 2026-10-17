@@ -1,0 +1,11 @@
+ticker,company,sector,status,signal_date,entry_date,entry_price,shares,cost_value,target_slot_inr,notes
+CUPID,Cupid Limited,Fast Moving Consumer Goods,OPEN,2026-10-14,2026-10-15,350.5,141,49420.5,50000.0,Actual broker fill on 2026-10-15 (signal 2026-10-14)
+CYIENTDLM,Cyient DLM Limited,,OPEN,2026-10-14,2026-10-15,1010.0,48,48480.0,50000.0,Actual broker fill on 2026-10-15 (signal 2026-10-14)
+FCL,Fineotex Chemical Limited,,OPEN,2026-10-14,2026-10-15,58.15,833,48438.95,50000.0,Actual broker fill on 2026-10-15 (signal 2026-10-14)
+IBULLSLTD,Indiabulls Limited,,OPEN,2026-10-14,2026-10-15,36.27,1315,47695.05,50000.0,Actual broker fill on 2026-10-15 (signal 2026-10-14)
+MARINE,Marine Electricals (India) Limited,,OPEN,2026-10-14,2026-10-15,441.5,106,46799.0,50000.0,Actual broker fill on 2026-10-15 (signal 2026-10-14)
+RAYMOND,Raymond Limited,,OPEN,2026-10-14,2026-10-15,1138.0,42,47796.0,50000.0,Actual broker fill on 2026-10-15 (signal 2026-10-14)
+RPEL,Raghav Productivity Enhancers Limited,,OPEN,2026-10-14,2026-10-15,1778.59,26,46243.4,50000.0,Actual broker fill on 2026-10-15 (signal 2026-10-14)
+SKYGOLD,SKY GOLD AND DIAMONDS LIMITED,Consumer Durables,OPEN,2026-10-14,2026-10-15,999.02,51,50950.0,50000.0,Actual broker fill on 2026-10-15 (signal 2026-10-14)
+WELCORP,Welspun Corp Limited,Capital Goods,OPEN,2026-10-14,2026-10-15,2516.1,19,47805.9,50000.0,Actual broker fill on 2026-10-15 (signal 2026-10-14)
+MOREPENLAB,Morepen Laboratories Limited,,OPEN,2026-10-14,2026-10-15,125.6,403,50616.8,50000.0,Actual broker fill on 2026-10-15 (signal 2026-10-14)

@@ -1,0 +1,54 @@
+MAYUR LIVE LONG BOOK
+Master: /Users/mayur.c/stocks/screener 1/output/my_portfolio/MASTER.json
+Status: RUNNING  ·  Started 2026-10-15 (signal 2026-10-14)
+As of: 2026-10-16  ·  Generated 2026-10-16 15:51
+
+SUMMARY
+• Equity: ₹496,026  (-0.79%)
+• PnL: ₹-3,974  on capital ₹500,000
+• Invested (cost): ₹484,246  ·  MTM: ₹480,272  ·  Cash: ₹15,754
+• Open: 10  ·  Closed: 0
+
+OPEN POSITIONS
+────────────────────────────────────────────────────────────────────────
+ 1. SKYGOLD      SKY GOLD AND DIAMONDS LIMITED
+    Bought 2026-10-15 @ ₹999.02  × 51
+    Now ₹1,060.60  ·  +6.16%  ·  PnL ₹3,141  ·  ~10.9%
+
+ 2. WELCORP      Welspun Corp Limited
+    Bought 2026-10-15 @ ₹2,516.10  × 19
+    Now ₹2,571.50  ·  +2.20%  ·  PnL ₹1,053  ·  ~9.85%
+
+ 3. RPEL         Raghav Productivity Enhancers Li
+    Bought 2026-10-15 @ ₹1,778.59  × 26
+    Now ₹1,811.50  ·  +1.85%  ·  PnL ₹856  ·  ~9.5%
+
+ 4. CUPID        Cupid Limited
+    Bought 2026-10-15 @ ₹350.50  × 141
+    Now ₹353.70  ·  +0.91%  ·  PnL ₹451  ·  ~10.05%
+
+ 5. RAYMOND      Raymond Limited
+    Bought 2026-10-15 @ ₹1,138.00  × 42
+    Now ₹1,133.90  ·  -0.36%  ·  PnL ₹-172  ·  ~9.6%
+
+ 6. MOREPENLAB   Morepen Laboratories Limited
+    Bought 2026-10-15 @ ₹125.60  × 403
+    Now ₹123.87  ·  -1.38%  ·  PnL ₹-697  ·  ~10.06%
+
+ 7. FCL          Fineotex Chemical Limited
+    Bought 2026-10-15 @ ₹58.15  × 833
+    Now ₹57.25  ·  -1.55%  ·  PnL ₹-750  ·  ~9.61%
+
+ 8. IBULLSLTD    Indiabulls Limited
+    Bought 2026-10-15 @ ₹36.27  × 1315
+    Now ₹35.42  ·  -2.34%  ·  PnL ₹-1,118  ·  ~9.39%
+
+ 9. MARINE       Marine Electricals (India) Limit
+    Bought 2026-10-15 @ ₹441.50  × 106
+    Now ₹429.00  ·  -2.83%  ·  PnL ₹-1,325  ·  ~9.17%
+
+10. CYIENTDLM    Cyient DLM Limited
+    Bought 2026-10-15 @ ₹1,010.00  × 48
+    Now ₹897.25  ·  -11.16%  ·  PnL ₹-5,412  ·  ~8.68%
+
+Files: holdings.csv · mtm.csv · MASTER.json
