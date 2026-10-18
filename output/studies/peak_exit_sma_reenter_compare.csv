@@ -1,5 +1,0 @@
-Strategy,name,start,end,CAGR %,Vol %,Sharpe,Max DD %,Calmar,Final,Total %,Allow new buys %,Trades,Win %,PF,N500 Total %,N500 Max DD %,Excess CAGR pts,Trough date,Pre-peak Total %,Post-peak Total %
-long_sma200_block (no foresight),long_sma200_block (no foresight),2024-01-02,2026-10-09,38.35,28.4,1.098,-28.89,1.327,2456010.0,145.6,72.4,40,40.0,4.02,12.61,-18.84,33.97,2025-03-11,3.59,137.09
-Live Long (no foresight),Live Long (no foresight),2024-01-02,2026-10-09,35.73,29.1,1.011,-29.26,1.221,2329395.0,132.94,100.0,42,40.5,3.35,12.61,-18.84,31.35,2025-03-03,3.59,124.87
-Peak-exit Sep → long_sma (may rebuy next month),Peak-exit Sep → long_sma (may rebuy next month),2024-01-02,2026-10-09,30.52,27.83,0.901,-26.29,1.161,2090085.0,109.01,72.4,44,43.2,2.91,12.61,-18.84,26.14,2025-03-03,3.59,101.77
-Peak-exit Sep → cash until SMA recovery → long_sma,Peak-exit Sep → cash until SMA recovery → long_sma,2024-01-02,2026-10-09,19.73,26.79,0.596,-20.64,0.956,1645940.0,64.59,67.2,58,51.7,2.16,12.61,-18.84,15.35,2026-03-23,3.59,58.89

@@ -1,9 +1,11 @@
 """
 Monthly Long book: data download + portfolio backtest (India, 2000 onwards)
 
-Live defaults (mcap-grid study): top 800 by today's mcap among ≥ ₹2,000 cr,
-10 slots, industry cap 3, Nifty500 Equal Weight > SMA200 block-new-buys
-(CNX500 / ^CRSLDX before Equal Weight history exists, ~2024-06).
+Live defaults (mcap-grid study): top 800 by today's mcap among ≥ ₹2,000 cr
+from NSE EQUITY_L series EQ + BE + BZ (Trade-for-Trade kept — large names often
+sit in BE/BZ around corporate actions), 10 slots, industry cap 3, Nifty500 Equal
+Weight > SMA200 block-new-buys (CNX500 / ^CRSLDX before Equal Weight history,
+~2024-06). Every load_universe() / live / backtest / study pick rebuilds that list.
 See LONG_STRATEGY.md / RUN.md.
 
 Setup:   pip install yfinance pandas numpy matplotlib
@@ -11,6 +13,7 @@ Run:     python main.py download | python main.py fix-data | python main.py back
 """
 
 from pathlib import Path
+import re
 import numpy as np
 import pandas as pd
 
@@ -71,9 +74,11 @@ def _ensure_output_dirs():
 
 # --- Universe (live India book) ---
 # Chosen from study-mcap-grid --from-2000: top 800 by today's mcap among ≥ ₹2,000 cr,
-# 10 slots, sector_cap 3 (most stable across starts; beats Nifty-500-only / 15-slot book).
+# 10 slots; uniform NSE sector_cap=3 (2015+ rolling + from-2021/2024 favor cap3 over adaptive).
+# Symbol list = NSE EQUITY_L filtered by NSE_UNIVERSE_SERIES (EQ + BE + BZ).
 MIN_MCAP_CR = 2000              # floor; tradable only when ESTIMATED mcap on that date >= this
 LIVE_UNIVERSE_TOP_N = 800       # keep largest N names by today's mcap among the floor set
+LIVE_UNIVERSE_LIST_FILE = OUTPUT_LIVE / "universe_top800_by_mcap.csv"
 # "point_in_time": tradable when est. mcap + liquidity + listing cooldown pass (see estimate_mcap_cr)
 # "today":         stocks with mcap >= MIN_MCAP_CR today are tradable for all history (upper-bound bias)
 MCAP_MODE = "point_in_time"
@@ -101,7 +106,10 @@ HIGH_WINDOW = 252               # trading days in the 52-week high
 BETA_LOOKBACK = 252             # rolling beta vs Nifty 500 for entry filter
 BETA_MAX = 1.25                 # require beta < this at signal (when filter enabled)
 ATH_PROX_MIN = 0.75             # close >= 75% of series high-water mark (within 25% of ATH)
-SECTOR_CAP = 3                  # max open positions in one industry
+SECTOR_CAP = 3                  # default max open positions in one NSE industry
+SECTOR_CAP_LARGE = 4            # cap for large NSE industries (see LARGE_INDUSTRY_MIN_NAMES)
+LARGE_INDUSTRY_MIN_NAMES = 50   # tag count in sectors.csv → treat as large
+USE_ADAPTIVE_SECTOR_CAP = False  # live uses SECTOR_CAP=3; set True for large=4 / others=3
 LONG_BOOK_LEGACY = dict(        # monthly book without the peak stop (for comparison)
     entry_col="entry_long", rank_col="roc126", exit_mode="sma200",
     size_mode="equal", sector_cap=SECTOR_CAP, max_positions=LONG_POSITIONS,
@@ -143,6 +151,15 @@ NSE_IND_CLOSE_URL = (
     "https://nsearchives.nseindia.com/content/indices/ind_close_all_{ddmmyyyy}.csv"
 )
 NIFTY500_EW_ARCHIVE_START = "2024-06-03"  # first archive days with this index name
+# Live / Nifty-500 universe: normal EQ plus Trade-for-Trade (BE/BZ). NSE parks
+# large liquid names in BE/BZ around corporate actions; excluding them dropped
+# STLTECH / HFCL / MTARTECH from the top-800 mcap book.
+NSE_UNIVERSE_SERIES = frozenset({"EQ", "BE", "BZ"})
+
+
+def _series_in_universe(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.strip()
+    return s.isin(NSE_UNIVERSE_SERIES) | s.isin(["", "nan"]) | series.isna()
 
 
 # ----------------------------- UNIVERSE --------------------------------------
@@ -160,8 +177,9 @@ def _read_equity_l():
                 f"Download it manually from {NSE_LIST_URL} and save as EQUITY_L.csv next to this script.")
     df = pd.read_csv(local)
     df.columns = df.columns.str.strip()
-    df = df[df["SERIES"].astype(str).str.strip() == "EQ"].copy()
+    df = df[_series_in_universe(df["SERIES"])].copy()
     df["SYMBOL"] = df["SYMBOL"].astype(str).str.strip()
+    df = df.drop_duplicates(subset=["SYMBOL"], keep="first")
     list_col = next((c for c in df.columns if "DATE OF LISTING" in c.upper()), None)
     if list_col:
         df["listing"] = pd.to_datetime(df[list_col], format="%d-%b-%Y", errors="coerce")
@@ -194,7 +212,7 @@ def _read_nifty500_list(refresh=False):
     df["SYMBOL"] = df[sym_col].astype(str).str.strip()
     series_col = next((c for c in df.columns if c.upper() == "SERIES"), None)
     if series_col is not None:
-        df = df[df[series_col].astype(str).str.strip().isin(["EQ", "BE", "BZ", ""]) | df[series_col].isna()]
+        df = df[_series_in_universe(df[series_col])]
     return df
 
 
@@ -210,7 +228,7 @@ def get_nifty500_symbols(refresh=False):
 
 
 def get_nse_symbols():
-    """All NSE EQ symbols from EQUITY_L.csv (listing metadata / optional extras)."""
+    """NSE symbols from EQUITY_L.csv in NSE_UNIVERSE_SERIES (EQ + BE + BZ)."""
     return sorted(_read_equity_l()["SYMBOL"].unique())
 
 
@@ -942,8 +960,10 @@ def load_universe(force=False, refresh_list=False, cache_only=None, data_mode=No
                     lambda m: ~m.index.duplicated(keep="first")
                 ]
     print(
-        f"Live universe: top {LIVE_UNIVERSE_TOP_N} by mcap (≥ ₹{MIN_MCAP_CR:,.0f} cr) → "
-        f"{len(data)} symbols | book {LONG_POSITIONS} slots | sector_cap {SECTOR_CAP}"
+        f"Live universe: top {LIVE_UNIVERSE_TOP_N} by mcap (≥ ₹{MIN_MCAP_CR:,.0f} cr) "
+        f"from {'+'.join(sorted(NSE_UNIVERSE_SERIES))} → "
+        f"{len(data)} symbols | book {LONG_POSITIONS} slots | "
+        f"sector_cap {format_sector_cap(live_sector_cap())}"
     )
     return data, meta
 
@@ -1072,9 +1092,56 @@ def _load_cached_ohlcv(symbols, listings=None, min_bars=MIN_BARS):
     return data
 
 
+def _persist_live_universe_list(take):
+    """
+    Write the exact symbol list the live book will consider (rank, mcap, series).
+    Called on every load_mcap_floor_universe / load_universe so picks always
+    come from the current top-N EQ+BE+BZ ranking.
+    """
+    _ensure_output_dirs()
+    eq = _read_equity_l().set_index("SYMBOL")
+    rows = []
+    series_counts = {"EQ": 0, "BE": 0, "BZ": 0, "other": 0}
+    for sym, r in take.iterrows():
+        series = ""
+        if sym in eq.index:
+            series = eq.loc[sym, "SERIES"]
+            if isinstance(series, pd.Series):
+                series = series.iloc[0]
+            series = str(series).strip()
+        bucket = series if series in series_counts else "other"
+        series_counts[bucket] = series_counts.get(bucket, 0) + 1
+        rows.append({
+            "rank": int(r["rank"]),
+            "symbol": sym,
+            "mcap_cr": float(r["mcap_cr"]),
+            "series": series,
+        })
+    df = pd.DataFrame(rows)
+    path = OUTPUT_LIVE / f"universe_top{len(df)}_by_mcap.csv"
+    df.to_csv(path, index=False)
+    if len(df) == int(LIVE_UNIVERSE_TOP_N):
+        df.to_csv(LIVE_UNIVERSE_LIST_FILE, index=False)
+        path = LIVE_UNIVERSE_LIST_FILE
+    be_names = [r["symbol"] for r in rows if r["series"] == "BE"]
+    bz_names = [r["symbol"] for r in rows if r["series"] == "BZ"]
+    print(
+        f"Universe series in pick list: EQ={series_counts.get('EQ', 0)} "
+        f"BE={series_counts.get('BE', 0)} BZ={series_counts.get('BZ', 0)}"
+        + (f" other={series_counts.get('other', 0)}" if series_counts.get("other") else "")
+        + f" → {path}"
+    )
+    if be_names:
+        print(f"  BE in list: {', '.join(be_names)}")
+    if bz_names:
+        print(f"  BZ in list: {', '.join(bz_names)}")
+    return df
+
+
 def load_mcap_floor_universe(min_mcap_cr=MIN_MCAP_CR, top_n=None, force=False, cache_only=True):
     """
     Load prices for today's names with mcap >= min_mcap_cr (optionally top_n by mcap).
+    Symbol pool is get_nse_symbols() = NSE EQUITY_L series EQ + BE + BZ.
     Returns (data, meta_ranked, ranked_all).
 
     Honours DATA_MODE; legacy force/cache_only still work when set explicitly.
@@ -1094,7 +1161,11 @@ def load_mcap_floor_universe(min_mcap_cr=MIN_MCAP_CR, top_n=None, force=False, c
     ranked.to_csv(NSE_TOP_LIST_FILE)
     take = ranked if top_n is None else ranked.head(int(top_n))
     syms = list(take.index)
-    print(f"Mcap ≥ ₹{min_mcap_cr:,.0f} cr: {len(ranked)} names; loading top {len(syms)} (mode={DATA_MODE})")
+    print(
+        f"Mcap ≥ ₹{min_mcap_cr:,.0f} cr: {len(ranked)} names; loading top {len(syms)} "
+        f"(series={'+'.join(sorted(NSE_UNIVERSE_SERIES))}, mode={DATA_MODE})"
+    )
+    _persist_live_universe_list(take)
     listings = take["listing"].to_dict() if "listing" in take.columns else {}
     eq = _read_equity_l().set_index("SYMBOL")
     for s in syms:
@@ -2259,9 +2330,10 @@ def build_panels(data, universe=None, mcaps=None, bench_close=None, indicator_kw
     P = {c: panel(c) for c in
          ["Open", "Close", "Volume", "sma50", "sma100", "sma150", "sma200", "atr", "roc63", "roc126",
           "roc252", "roc_12_1", "vol126", "mom_adj", "mom_smooth", "prox", "prox_ath",
-          "sharpe63", "sharpe126", "sharpe252"] + entry_cols}
+          "sharpe63", "sharpe126", "sharpe252", "tradable"] + entry_cols}
     for c in entry_cols:
         P[c] = P[c].fillna(False).astype(bool)
+    P["tradable"] = P["tradable"].fillna(False).astype(bool)
     rank3 = P["roc63"].rank(axis=1, pct=True)
     rank6 = P["roc126"].rank(axis=1, pct=True)
     rank12 = P["roc252"].rank(axis=1, pct=True)
@@ -2311,7 +2383,8 @@ def month_end_mask(dates, rebal_offset_days=0):
     return s.to_numpy()
 
 
-def long_pick_at_signal(i, tickers, sectors, P, entry_col, rank_col, held_j, n_pos, sector_cap):
+def long_pick_at_signal(i, tickers, sectors, P, entry_col, rank_col, held_j, n_pos, sector_cap,
+                        clusters=None):
     """Same candidate walk as backtest() step 4 on month-end index i (signal close)."""
     ENT = P[entry_col].to_numpy()
     RANK = P[rank_col].to_numpy()
@@ -2319,27 +2392,28 @@ def long_pick_at_signal(i, tickers, sectors, P, entry_col, rank_col, held_j, n_p
     slots = n_pos - len(held_j)
     if slots <= 0:
         return []
+    cap_sec = clusters if clusters is not None else sectors
     cands = [j for j in range(len(tickers)) if ENT[i, j] and j not in held_j and np.isfinite(RANK[i, j])]
     cands.sort(key=lambda j: -RANK[i, j])
     held_sec = {}
     for j in held_j:
-        sec = sectors[j]
-        held_sec[sec] = held_sec.get(sec, 0) + 1
+        _sector_counts_add(held_sec, cap_sec[j], 1)
     picked = []
     for j in cands:
         if len(picked) >= slots:
             break
-        sec = sectors[j]
-        if sector_cap and sec and held_sec.get(sec, 0) >= sector_cap:
+        sec = cap_sec[j]
+        if sector_cap_blocks(held_sec, sec, sector_cap):
             continue
         picked.append(j)
-        held_sec[sec] = held_sec.get(sec, 0) + 1
+        _sector_counts_add(held_sec, sec, 1)
     close = P["Close"].iloc[i]
     rows = []
     for j in picked:
         rows.append(dict(
             ticker=tickers[j],
             sector=sectors[j],
+            cluster=cap_sec[j],
             rank_col=rank_col,
             rank_value=float(RANK[i, j]),
             close=float(close.iloc[j]) if j < len(close) else np.nan,
@@ -2356,7 +2430,7 @@ def official_long_next_buys(fresh_account=False, save_csv=True):
     data, universe = load_universe()
     bench, _ = _load_nifty500_close(None)
     tickers, P = build_panels(data, universe=universe, bench_close=bench)
-    sectors = [load_sectors(tickers).get(t, "") for t in tickers]
+    sectors, clusters = aligned_sector_lists(tickers)
     kw = adopted_long_kwargs(P)
     entry_col = kw.get("entry_col", "entry_long")
     rank_col = kw.get("rank_col", "roc126")
@@ -2383,10 +2457,13 @@ def official_long_next_buys(fresh_account=False, save_csv=True):
         gate_px = float(gs.iloc[lag_i]) if np.isfinite(gs.iloc[lag_i]) else np.nan
         gate_sma = float(sma.iloc[lag_i]) if np.isfinite(sma.iloc[lag_i]) else np.nan
 
+    bt_kw = dict(kw)
+    if USE_SECTOR_CLUSTERS:
+        bt_kw["clusters"] = clusters
     if fresh_account:
         held_j = []
     else:
-        _, tr = backtest(tickers, P, sectors=sectors, **kw)
+        _, tr = backtest(tickers, P, sectors=sectors, **bt_kw)
         held_j = []
         if not tr.empty:
             open_t = set(tr.loc[tr.reason == "open_at_end", "ticker"])
@@ -2409,6 +2486,7 @@ def official_long_next_buys(fresh_account=False, save_csv=True):
 
     picks = long_pick_at_signal(
         preview_i, tickers, sectors, P, entry_col, rank_col, held_j, n_pos, sector_cap,
+        clusters=clusters if USE_SECTOR_CLUSTERS else None,
     )
     slots = n_pos - len(held_j)
 
@@ -2418,7 +2496,14 @@ def official_long_next_buys(fresh_account=False, save_csv=True):
 
     df = pd.DataFrame(picks)
     print("\n=== Long next buys ===")
-    print(f"Live book: {entry_col}, rank {rank_col}, {n_pos} slots, sector cap {sector_cap}")
+    print(
+        f"Universe: top {LIVE_UNIVERSE_TOP_N} by mcap (≥ ₹{MIN_MCAP_CR:,.0f} cr) "
+        f"series {'+'.join(sorted(NSE_UNIVERSE_SERIES))} · {len(tickers)} with prices "
+        f"· list {LIVE_UNIVERSE_LIST_FILE}"
+    )
+    print(f"Live book: {entry_col}, rank {rank_col}, {n_pos} slots, "
+          f"sector cap {format_sector_cap(sector_cap)}"
+          f"{' (risk clusters)' if USE_SECTOR_CLUSTERS else ' (NSE industry)'}")
     print(
         f"Index gate: Nifty500 Equal Weight > SMA200 (lag 1"
         f"{'; CNX500 before ' + gate_meta.get('ew_start', '2024-06') if gate_meta else ''}"
@@ -2506,7 +2591,7 @@ Data source flags (prices + mcap meta):
   python main.py download-us       Top 1000 US by mcap, Yahoo history from 2010
   python main.py import-us         S&P 1500 + 2000 more NASDAQ/NYSE (fill missing, from 2010)
 Research (optional, -> output/studies/):
-  python main.py study rank | entry | validate | atr | compare | universe | regime | us | sep2024
+  python main.py study rank | entry | validate | atr | compare | universe | regime | us | sep2024 | top30-band | mom-hybrid | cg-taxonomy | sector-clusters
 
 Full strategy grid + breakout sweep (slow):
   python main.py full
@@ -2526,7 +2611,8 @@ def backtest(tickers, P, entry_col="entry_long", rank_col="roc126", start=None,
              crash_off=None, reentry_ok=None, crash_scale=1.0,
              rebal_offset_days=0, tiered_exit=False, holdings_vol_target=False,
              cash_ret_idle_only=False, cost_per_side=None, exit_stress_slippage=False,
-             risk_per_trade=None, daily_dd_stop=None):
+             risk_per_trade=None, daily_dd_stop=None, rank_abs=None, rank_keep=None,
+             sma_exit=True, clusters=None):
     """risk_mult and slot_cap are per-date arrays aligned to P['Close'].index.
 
     risk_mult scales RISK_PER_TRADE (0 blocks the entry). slot_cap replaces
@@ -2535,6 +2621,10 @@ def backtest(tickers, P, entry_col="entry_long", rank_col="roc126", start=None,
     crash_off: daily flatten (or partial trim via crash_scale) on held positions.
     reentry_ok: when False, block new entries even on rebalance days.
     daily_dd_stop: check peak drawdown every day (sma200 book); dd_stop stays month-end.
+    rank_abs / rank_keep: month-end exit when absolute momentum rank (1=best) > rank_keep.
+    sma_exit: if False, skip the stock below-SMA200 month-end exit (studies / mom band).
+    sectors: fine industry labels logged on trades.
+    clusters: optional cap labels (risk clusters); when None, cap uses sectors.
     """
     dates = P["Close"].index
     O = P["Open"].to_numpy()
@@ -2548,10 +2638,15 @@ def backtest(tickers, P, entry_col="entry_long", rank_col="roc126", start=None,
     atr_mult = ATR_MULT if atr_mult is None else atr_mult
     n_pos = MAX_POSITIONS if max_positions is None else max_positions
     sectors = sectors or [""] * len(tickers)
+    # Cap uses risk clusters when provided; blotter still logs fine industry in sectors.
+    cap_sec = clusters if clusters is not None else sectors
+    if len(cap_sec) != len(tickers):
+        raise ValueError("clusters/sectors length must match tickers")
     VOL = None if vol is None else np.asarray(vol, dtype=float)
     month_end = month_end_mask(dates, rebal_offset_days)
     crash_off = None if crash_off is None else np.asarray(crash_off, dtype=bool)
     reentry_ok = None if reentry_ok is None else np.asarray(reentry_ok, dtype=bool)
+    rank_abs_arr = None if rank_abs is None else np.asarray(rank_abs, dtype=float)
     cps = COST_PER_SIDE if cost_per_side is None else float(cost_per_side)
     rpt = RISK_PER_TRADE if risk_per_trade is None else float(risk_per_trade)
 
@@ -2680,7 +2775,8 @@ def backtest(tickers, P, entry_col="entry_long", rank_col="roc126", start=None,
                     p["exit_reason"] = "time_stop"
                 if month_end[i] and not p["exit_reason"]:
                     rank_now = rank_pct[i, j] if rank_pct is not None else np.nan
-                    if not np.isnan(S200[i, j]) and c < S200[i, j]:
+                    abs_now = (rank_abs_arr[i, j] if rank_abs_arr is not None else np.nan)
+                    if sma_exit and not np.isnan(S200[i, j]) and c < S200[i, j]:
                         p["exit_reason"] = "below_sma200"
                     elif tiered_exit and S100 is not None and not np.isnan(S100[i, j]) and c < S100[i, j]:
                         sell = p["shares"] // 2
@@ -2688,6 +2784,9 @@ def backtest(tickers, P, entry_col="entry_long", rank_col="roc126", start=None,
                             pending_trims.append((j, sell, "tier_sma100"))
                     elif dd_stop and c < p["high"] * (1 - dd_stop):
                         p["exit_reason"] = "peak_dd"
+                    elif (rank_keep is not None and rank_abs_arr is not None
+                          and (not np.isfinite(abs_now) or abs_now > float(rank_keep))):
+                        p["exit_reason"] = "rank_drop_topN"
                     elif rs_min is not None and np.isfinite(rank_now) and rank_now < rs_min:
                         p["exit_reason"] = "rank_drop"
                     elif (tighten and regime_off is not None and regime_off[i]
@@ -2773,16 +2872,16 @@ def backtest(tickers, P, entry_col="entry_long", rank_col="roc126", start=None,
             cands.sort(key=lambda j: -RANK[i, j])
             held = {}
             for j in pos:
-                held[sectors[j]] = held.get(sectors[j], 0) + 1
+                _sector_counts_add(held, cap_sec[j], 1)
             picked = []
             for j in cands:
                 if len(picked) >= slots:
                     break
-                sec = sectors[j]
-                if sector_cap and sec and held.get(sec, 0) >= sector_cap:
+                sec = cap_sec[j]
+                if sector_cap_blocks(held, sec, sector_cap):
                     continue
                 picked.append(j)
-                held[sec] = held.get(sec, 0) + 1
+                _sector_counts_add(held, sec, 1)
             pending_entries = [(j, mult) for j in picked]
 
     for j, p in pos.items():
@@ -2868,8 +2967,10 @@ def backtest_breakout(tickers, P, sectors, regime_ok, atr_mult, exit_mode, marke
         for j in pending:
             if j in pos or len(pos) >= MAX_POSITIONS or not np.isfinite(O[i, j]):
                 continue
-            sec = sectors[j]
-            if sec and sum(sectors[k] == sec for k in pos) >= SECTOR_CAP:
+            held_now = {}
+            for k in pos:
+                _sector_counts_add(held_now, sectors[k], 1)
+            if sector_cap_blocks(held_now, sectors[j], SECTOR_CAP):
                 continue
             if i - last_exit[j] < cooldown:
                 continue
@@ -2932,18 +3033,17 @@ def backtest_breakout(tickers, P, sectors, regime_ok, atr_mult, exit_mode, marke
         cands.sort(key=lambda j: -SCORE[i, j])
         held = {}
         for j, p in pos.items():
-            if sectors[j] and p["exit_reason"] is None:
-                held[sectors[j]] = held.get(sectors[j], 0) + 1
+            if p["exit_reason"] is None:
+                _sector_counts_add(held, sectors[j], 1)
         picked = []
         for j in cands:
             if len(picked) >= slots:
                 break
             sec = sectors[j]
-            if sec and held.get(sec, 0) >= SECTOR_CAP:
+            if sector_cap_blocks(held, sec, SECTOR_CAP):
                 continue
             picked.append(j)
-            if sec:
-                held[sec] = held.get(sec, 0) + 1
+            _sector_counts_add(held, sec, 1)
         pending = picked
 
     for j, p in pos.items():
@@ -3077,8 +3177,9 @@ def run_deep_nifty500_compare():
     data, universe = load_universe()
     bench, bench_ticker = _load_nifty500_close(None)
     tickers, P = build_panels(data, universe=universe, bench_close=bench)
-    sectors = [load_sectors(tickers).get(t, "") for t in tickers]
-    eq_long, trades = backtest(tickers, P, sectors=sectors, **adopted_long_kwargs(P))
+    eq_long, trades = backtest(
+        tickers, P, **backtest_sector_kwargs(tickers), **adopted_long_kwargs(P),
+    )
     eq_long = eq_long.dropna()
     idx = eq_long.index
 
@@ -3304,10 +3405,140 @@ def _jackpot(tr, k=10):
             "PF ex top 10": win / abs(loss) if loss else np.nan}
 
 
-def load_sectors(tickers):
-    """Industry from NSE index constituent files, cached. Missing symbols stay uncapped."""
+def sector_labels(sec):
+    """Split a sector field into industry labels. Multi-tags use '|', ';', or '+'."""
+    if sec is None:
+        return []
+    if isinstance(sec, (list, tuple)):
+        return [str(s).strip() for s in sec if str(s).strip() and str(s).strip().lower() != "nan"]
+    if isinstance(sec, float) and not np.isfinite(sec):
+        return []
+    s = str(sec).strip()
+    if not s or s.lower() in ("nan", "none", ""):
+        return []
+    parts = re.split(r"[|;+]+", s)
+    return [p.strip() for p in parts if p.strip() and p.strip().lower() != "nan"]
+
+
+def _sector_counts_add(held, sec, delta=1, mode=None):
+    """Increment / decrement industry labels on a name (multi-industry aware)."""
+    labs = sector_labels(sec)
+    mode = mode or MULTI_SECTOR_CAP_MODE
+    if mode == "primary_only" and labs:
+        labs = labs[:1]
+    for lab in labs:
+        held[lab] = held.get(lab, 0) + delta
+
+
+# Multi-industry sector cap:
+#   "any_room" — allow a name if at least one of its industries is still under the
+#                cap (e.g. Capital Goods full but Chemicals open → CG|Chemicals OK).
+#                Buying still increments every label (CG can go above the cap via
+#                dual-tagged names). From-2015 retest: weaker than all_clear.
+#   "all_clear" — block if any industry is already at the cap (stricter; live default).
+#   "primary_only" — only the first tag counts toward the cap (hybrids softer).
+MULTI_SECTOR_CAP_MODE = "all_clear"
+
+# Risk clusters used for sector_cap when USE_SECTOR_CLUSTERS is True.
+# Fine industry stays on the blotter; cap counts exactly one cluster per name.
+# sector-clusters study (2010 + peaks): median Calmar did not beat NSE industry cap → False.
+USE_SECTOR_CLUSTERS = False
+
+CAP_CLUSTER_HIGHLIGHTS = (
+    "Industrials Electrical",
+    "Industrials Mechanical",
+    "Industrials Defense",
+    "Banks",
+    "NBFC Lending",
+    "Insurance",
+    "Capital Markets",
+    "Pharma",
+    "Hospitals Diagnostics",
+)
+
+
+def sector_cap_limit(lab, sector_cap):
+    """Per-industry limit. sector_cap may be an int or {industry: cap, '_default': n}."""
+    if isinstance(sector_cap, dict):
+        return int(sector_cap.get(lab, sector_cap.get("_default", SECTOR_CAP)))
+    return int(sector_cap)
+
+
+def sector_cap_blocks(held, sec, sector_cap, mode=None):
+    """True if sector_cap forbids buying this name given current held counts."""
+    if not sector_cap:
+        return False
+    labs = sector_labels(sec)
+    if not labs:
+        return False  # unlabeled still uncapped
+    mode = mode or MULTI_SECTOR_CAP_MODE
+    if mode == "primary_only":
+        labs = labs[:1]
+    at_cap = [held.get(lab, 0) >= sector_cap_limit(lab, sector_cap) for lab in labs]
+    if mode == "all_clear":
+        return any(at_cap)  # block if any industry is full
+    if mode == "primary_only":
+        return at_cap[0] if at_cap else False
+    # any_room: block only if every industry is already full
+    return all(at_cap)
+
+
+def nse_adaptive_sector_cap(min_names=None, large_cap=None, default_cap=None,
+                            cache_path=None, overrides_path=None):
+    """NSE industry caps: large buckets get large_cap, others default_cap.
+
+    Size is counted from data_cache/sectors.csv tag frequency (primary+secondary).
+    Returns dict suitable for backtest(sector_cap=...).
+    """
+    min_names = LARGE_INDUSTRY_MIN_NAMES if min_names is None else int(min_names)
+    large_cap = SECTOR_CAP_LARGE if large_cap is None else int(large_cap)
+    default_cap = SECTOR_CAP if default_cap is None else int(default_cap)
+    from collections import Counter
+    ind_map, _cl = _read_sectors_frame(cache_path, overrides_path)
+    counts = Counter()
+    for ind in ind_map.values():
+        for lab in sector_labels(ind):
+            counts[lab] += 1
+    out = {"_default": default_cap}
+    for lab, n in counts.items():
+        out[lab] = large_cap if n >= min_names else default_cap
+    return out
+
+
+def live_sector_cap():
+    """Sector cap used by the live Long book (adaptive NSE or plain SECTOR_CAP)."""
+    if USE_ADAPTIVE_SECTOR_CAP:
+        return nse_adaptive_sector_cap()
+    return SECTOR_CAP
+
+
+def format_sector_cap(sector_cap):
+    """Short string for logs / live banner."""
+    if isinstance(sector_cap, dict):
+        large = sorted(k for k, v in sector_cap.items()
+                       if k != "_default" and v >= SECTOR_CAP_LARGE)
+        d = sector_cap.get("_default", SECTOR_CAP)
+        return (f"adaptive large={SECTOR_CAP_LARGE} else={d} "
+                f"({len(large)} large: {', '.join(large[:6])}"
+                f"{'…' if len(large) > 6 else ''})")
+    return str(sector_cap)
+
+
+def _sector_tag_counts(mapping):
+    """Count primary+secondary tags across a symbol→industry mapping."""
+    from collections import Counter
+    c = Counter()
+    for ind in mapping.values():
+        for lab in sector_labels(ind):
+            c[lab] += 1
+    return c
+
+
+def _read_sectors_frame(cache_path=None, overrides_path=None):
+    """Load symbol→industry and symbol→cluster maps from cache + overrides."""
     CACHE_DIR.mkdir(exist_ok=True)
-    cache = CACHE_DIR / "sectors.csv"
+    cache = Path(cache_path) if cache_path else (CACHE_DIR / "sectors.csv")
+    overrides = Path(overrides_path) if overrides_path else (CACHE_DIR / "sector_overrides.csv")
     if not cache.exists():
         import io
         import requests
@@ -3326,14 +3557,108 @@ def load_sectors(tickers):
             except Exception as e:
                 print(f"  sector list skipped ({url.split('/')[-1]}): {e}")
         if not frames:
-            return {t: "" for t in tickers}
+            return {}, {}
         out = pd.concat(frames, ignore_index=True)
         out["symbol"] = out["symbol"].astype(str).str.strip()
         out["industry"] = out["industry"].astype(str).str.strip()
+        out["cluster"] = out["industry"]
         out.drop_duplicates("symbol").to_csv(cache, index=False)
     df = pd.read_csv(cache)
-    mapping = dict(zip(df.symbol.astype(str), df.industry.astype(str)))
-    return {t: mapping.get(t, "") for t in tickers}
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    if "symbol" not in df.columns or "industry" not in df.columns:
+        return {}, {}
+    # Live/backtest use a single NSE industry per name (first tag if multi-tag sneaks in).
+    def _one_nse(ind):
+        labs = sector_labels(ind)
+        return labs[0] if labs else ""
+
+    ind_map = {str(sym).strip(): _one_nse(ind)
+               for sym, ind in zip(df.symbol.astype(str), df.industry.astype(str))}
+    if "cluster" in df.columns:
+        cl_map = {str(sym).strip(): _one_nse(cl)
+                  for sym, cl in zip(df.symbol.astype(str), df.cluster.fillna("").astype(str))}
+    else:
+        cl_map = dict(ind_map)
+    if overrides.exists():
+        ov = pd.read_csv(overrides)
+        ov.columns = [str(c).strip().lower() for c in ov.columns]
+        if {"symbol", "industry"}.issubset(set(ov.columns)):
+            for _, r in ov.iterrows():
+                sym = str(r["symbol"]).strip()
+                ind = _one_nse(r["industry"])
+                if sym and ind:
+                    ind_map[sym] = ind
+                if "cluster" in ov.columns:
+                    cl = _one_nse(r["cluster"])
+                    if sym and cl:
+                        cl_map[sym] = cl
+                elif sym and ind:
+                    cl_map[sym] = ind
+    for sym, ind in ind_map.items():
+        cl = cl_map.get(sym, "")
+        if not cl or cl.lower() in ("nan", "none"):
+            cl_map[sym] = ind
+    return ind_map, cl_map
+
+
+def load_sectors(tickers, cache_path=None, overrides_path=None, quiet=False):
+    """
+    Fine industry labels for the blotter / display.
+    Cached in data_cache/sectors.csv (symbol, industry[, cluster]).
+    Multi-tag OK: \"Electrical Equipment | Engineering\" or \"Textiles + Engineering\".
+    Optional sector_overrides.csv wins per symbol. Missing symbols stay unlabeled.
+    """
+    ind_map, cl_map = _read_sectors_frame(cache_path, overrides_path)
+    if not quiet and not getattr(load_sectors, "_logged", False):
+        n_cl = sum(1 for v in cl_map.values() if v)
+        bits = []
+        from collections import Counter
+        cc = Counter(cl_map.values())
+        for lab in CAP_CLUSTER_HIGHLIGHTS:
+            bits.append(f"{lab}={cc.get(lab, 0)}")
+        print(f"  Sectors: {len(ind_map)} industry | {n_cl} clusters | "
+              f"{', '.join(bits)}")
+        load_sectors._logged = True
+    return {t: ind_map.get(t, "") for t in tickers}
+
+
+def load_sector_clusters(tickers, cache_path=None, overrides_path=None, quiet=True):
+    """Single risk-cluster label per name for sector_cap (see USE_SECTOR_CLUSTERS)."""
+    _ind_map, cl_map = _read_sectors_frame(cache_path, overrides_path)
+    if not quiet:
+        load_sectors(tickers, cache_path=cache_path, overrides_path=overrides_path, quiet=False)
+    return {t: cl_map.get(t, "") for t in tickers}
+
+
+def aligned_sector_lists(tickers, use_clusters=None, cache_path=None, overrides_path=None):
+    """Return (industries, cap_labels) lists aligned to tickers.
+
+    industries — fine labels for trade logs.
+    cap_labels — clusters when use_clusters else industries (legacy NSE cap).
+    """
+    if use_clusters is None:
+        use_clusters = USE_SECTOR_CLUSTERS
+    ind_map, cl_map = _read_sectors_frame(cache_path, overrides_path)
+    industries = [ind_map.get(t, "") for t in tickers]
+    if use_clusters:
+        cap_labels = [cl_map.get(t, "") or (sector_labels(industries[i])[0]
+                      if sector_labels(industries[i]) else "")
+                      for i, t in enumerate(tickers)]
+    else:
+        cap_labels = list(industries)
+    return industries, cap_labels
+
+
+def backtest_sector_kwargs(tickers, use_clusters=None, cache_path=None, overrides_path=None):
+    """kwargs to pass into backtest(): sectors (+ clusters when enabled)."""
+    industries, clusters = aligned_sector_lists(
+        tickers, use_clusters=use_clusters,
+        cache_path=cache_path, overrides_path=overrides_path,
+    )
+    kw = {"sectors": industries}
+    if (USE_SECTOR_CLUSTERS if use_clusters is None else use_clusters):
+        kw["clusters"] = clusters
+    return kw
 
 
 def load_benchmarks():
@@ -3683,6 +4008,7 @@ def adopted_long_kwargs(P, bench=None, *, index_sma200_block=True,
     Pass index_sma200_block=False for the ungated baseline (studies only).
     """
     kw = dict(LONG_BOOK)
+    kw["sector_cap"] = live_sector_cap()
     sleeve = cash_sleeve_returns(P["Close"].index)
     if sleeve is not None:
         kw["cash_ret"] = sleeve
@@ -3707,9 +4033,11 @@ def adopted_long_kwargs(P, bench=None, *, index_sma200_block=True,
 
 
 def industry_rank_panel(P, sectors, lookback=126):
-    """Per-stock percentile rank of its industry's median lookback return."""
+    """Per-stock percentile rank of its (primary) industry's median lookback return."""
     r = P["Close"].pct_change(lookback)
-    sec = pd.Series(sectors, index=r.columns)
+    # primary = first tag when multi-industry
+    primary = [sector_labels(s)[0] if sector_labels(s) else "" for s in sectors]
+    sec = pd.Series(primary, index=r.columns)
     med = r.T.groupby(sec).median().T
     rk = med.rank(axis=1, pct=True)
     out = pd.DataFrame(np.nan, index=r.index, columns=r.columns)
@@ -5030,10 +5358,11 @@ def refresh_equity_chart():
     """Regenerate equity_curve.png and trades_long.csv without the full study grid."""
     data, universe = load_universe()
     tickers, P = build_panels(data, universe=universe)
-    sectors = [load_sectors(tickers).get(t, "") for t in tickers]
-    eq, trades = backtest(tickers, P, sectors=sectors, **adopted_long_kwargs(P))
-    eq_peak, _ = backtest(tickers, P, sectors=sectors, **LONG_BOOK)
-    eq_legacy, _ = backtest(tickers, P, sectors=sectors, **LONG_BOOK_LEGACY)
+    sec_kw = backtest_sector_kwargs(tickers)
+    sectors = sec_kw["sectors"]
+    eq, trades = backtest(tickers, P, **sec_kw, **adopted_long_kwargs(P))
+    eq_peak, _ = backtest(tickers, P, **sec_kw, **LONG_BOOK)
+    eq_legacy, _ = backtest(tickers, P, **sec_kw, **LONG_BOOK_LEGACY)
     bench_px = None
     for ticker in ("^CRSLDX", "^NSEI"):
         downloaded = download_one(ticker)
@@ -5326,19 +5655,239 @@ def run_entry_filter_study():
     return table, best
 
 
-def run_rank_momentum_study():
+def _open_industry_mix(tr):
+    """Industry counts for open_at_end rows (end-of-book concentration)."""
+    if tr is None or tr.empty or "reason" not in tr.columns:
+        return 0, np.nan, ""
+    open_tr = tr[tr["reason"] == "open_at_end"]
+    if open_tr.empty:
+        return 0, np.nan, ""
+    held = {}
+    for sec in open_tr["sector"].fillna(""):
+        _sector_counts_add(held, sec, 1)
+    if not held:
+        return int(len(open_tr)), np.nan, ""
+    return int(len(open_tr)), float(max(held.values())), str(dict(sorted(held.items(), key=lambda kv: -kv[1])))
+
+
+def run_cg_taxonomy_study(
+    starts=("2010-01-01", "2021-10-18", "2022-12-01", "2024-09-26"),
+):
+    """Baseline (pre-CG-split) vs new industrial taxonomy under sector-cap modes."""
+    global MULTI_SECTOR_CAP_MODE
+    _ensure_output_dirs()
     pd.set_option("display.width", 220)
-    pd.set_option("display.max_columns", 30)
+    pd.set_option("display.max_columns", 40)
+
+    baseline_path = CACHE_DIR / "sectors_backup_pre_cg_split.csv"
+    if not baseline_path.exists():
+        raise FileNotFoundError(
+            f"Missing {baseline_path} — restore pre-split sectors before studying"
+        )
+
     data, universe = load_universe()
     bench, _ = _load_nifty500_close(None)
     tickers, P = build_panels(data, universe=universe, bench_close=bench)
-    sectors = [load_sectors(tickers).get(t, "") for t in tickers]
-    table, best = rank_momentum_study(tickers, P, sectors)
-    if best and best != "rank roc126 (live)":
-        print(f"\nCandidate rank: {best} — review output/studies/rank_momentum_study.csv")
+
+    # Baseline = pre-split file as-is (no overrides). New = live sectors + overrides.
+    load_sectors._logged = True
+    dfb = pd.read_csv(baseline_path)
+    map_base = {t: dict(zip(dfb.symbol.astype(str).str.strip(),
+                            dfb.industry.astype(str).str.strip())).get(t, "")
+                for t in tickers}
+    map_new = load_sectors(tickers, quiet=True)
+
+    variants = [
+        ("A baseline all_clear", map_base, "all_clear"),
+        ("B new taxonomy all_clear", map_new, "all_clear"),
+        ("C new primary_only", map_new, "primary_only"),
+        ("D new any_room", map_new, "any_room"),
+    ]
+
+    rows = []
+    prev_mode = MULTI_SECTOR_CAP_MODE
+    try:
+        for start in starts:
+            for label, smap, mode in variants:
+                MULTI_SECTOR_CAP_MODE = mode
+                secs = [smap.get(t, "") for t in tickers]
+                kw = adopted_long_kwargs(P)
+                eq, tr = backtest(tickers, P, sectors=secs, start=start, **kw)
+                row = _after_tax_row(label, eq, tr)
+                open_n, max_ind, mix = _open_industry_mix(tr)
+                row.update({
+                    "WindowStart": start,
+                    "Mode": mode,
+                    "Open names": open_n,
+                    "Max industry count (open)": max_ind,
+                    "Open industry mix": mix,
+                })
+                # Keep Trades / yr alias used in older sector CSVs
+                row["Trades / yr"] = row.get("Turnover / yr", np.nan)
+                rows.append(row)
+                print(
+                    f"  [{start}] {label}: CAGR {row['CAGR %']}%  "
+                    f"DD {row['Max DD %']}%  Calmar {row['Calmar']}  "
+                    f"max_ind={max_ind}"
+                )
+    finally:
+        MULTI_SECTOR_CAP_MODE = prev_mode
+
+    out = pd.DataFrame(rows)
+    path = OUTPUT_STUDIES / "cg_taxonomy_split_compare.csv"
+    out.to_csv(path, index=False)
+    print(f"\nWrote {path}")
+
+    # Adoption gate: across windows, does B (or C) beat A on median Calmar
+    # without a large median CAGR give-up (>3 pts)?
+    def _med(df, strat, col):
+        sub = df[df["Strategy"] == strat]
+        return float(sub[col].median()) if len(sub) else np.nan
+
+    a_cal, b_cal, c_cal = (_med(out, s, "Calmar") for s in (
+        "A baseline all_clear", "B new taxonomy all_clear", "C new primary_only"))
+    a_cagr, b_cagr, c_cagr = (_med(out, s, "CAGR %") for s in (
+        "A baseline all_clear", "B new taxonomy all_clear", "C new primary_only"))
+
+    adopt = None
+    if np.isfinite(b_cal) and b_cal >= a_cal and (b_cagr >= a_cagr - 3.0):
+        adopt = "B"
+    elif np.isfinite(c_cal) and c_cal >= a_cal and (c_cagr >= a_cagr - 3.0):
+        adopt = "C"
+    print("\n=== Median across windows ===")
+    print(f"  A Calmar {a_cal:.3f} CAGR {a_cagr:.2f}")
+    print(f"  B Calmar {b_cal:.3f} CAGR {b_cagr:.2f}")
+    print(f"  C Calmar {c_cal:.3f} CAGR {c_cagr:.2f}")
+    if adopt == "B":
+        print("Verdict: ADOPT B (new taxonomy, all_clear) — keep sectors.csv as live.")
+    elif adopt == "C":
+        print("Verdict: ADOPT C (new taxonomy, primary_only) — set MULTI_SECTOR_CAP_MODE.")
     else:
-        print("\nNo rank variant beat live roc252 on Full Calmar (within CAGR guard). LONG_BOOK unchanged.")
-    return table, best
+        print("Verdict: KEEP baseline labels (restore from sectors_backup_pre_cg_split.csv).")
+    return out, adopt
+
+
+def _open_label_mix(tr, label_by_ticker):
+    """Industry/cluster counts for open_at_end rows using an external label map."""
+    if tr is None or tr.empty or "reason" not in tr.columns:
+        return 0, np.nan, ""
+    open_tr = tr[tr["reason"] == "open_at_end"]
+    if open_tr.empty:
+        return 0, np.nan, ""
+    held = {}
+    for t in open_tr["ticker"].astype(str):
+        _sector_counts_add(held, label_by_ticker.get(t, ""), 1)
+    if not held:
+        return int(len(open_tr)), np.nan, ""
+    return (
+        int(len(open_tr)),
+        float(max(held.values())),
+        str(dict(sorted(held.items(), key=lambda kv: -kv[1]))),
+    )
+
+
+def run_sector_clusters_study(
+    starts=("2010-01-01", "2021-10-18", "2022-12-01", "2024-09-26"),
+):
+    """NSE industry cap (baseline) vs two-level risk-cluster cap."""
+    global USE_SECTOR_CLUSTERS
+    _ensure_output_dirs()
+    pd.set_option("display.width", 220)
+    pd.set_option("display.max_columns", 40)
+
+    baseline_path = CACHE_DIR / "sectors_backup_pre_clusters.csv"
+    if not baseline_path.exists():
+        baseline_path = CACHE_DIR / "sectors_backup_pre_cg_split.csv"
+    if not baseline_path.exists():
+        raise FileNotFoundError("Missing sectors backup for baseline industry cap")
+
+    data, universe = load_universe()
+    bench, _ = _load_nifty500_close(None)
+    tickers, P = build_panels(data, universe=universe, bench_close=bench)
+    load_sectors._logged = True
+
+    dfb = pd.read_csv(baseline_path)
+    dfb.columns = [str(c).strip().lower() for c in dfb.columns]
+    map_base = dict(zip(dfb.symbol.astype(str).str.strip(),
+                        dfb.industry.astype(str).str.strip()))
+    base_secs = [map_base.get(t, "") for t in tickers]
+
+    industries, clusters = aligned_sector_lists(tickers, use_clusters=True)
+    cl_by_t = dict(zip(tickers, clusters))
+
+    variants = [
+        # A: legacy NSE industry labels for both blotter and cap
+        ("A baseline industry cap3", base_secs, None, 3),
+        # B/C: fine industry on blotter, risk cluster for cap
+        ("B cluster cap3", industries, clusters, 3),
+        ("C cluster cap4", industries, clusters, 4),
+        ("D no cap", industries, None, 0),
+    ]
+
+    rows = []
+    prev = USE_SECTOR_CLUSTERS
+    USE_SECTOR_CLUSTERS = False  # study passes clusters explicitly
+    try:
+        for start in starts:
+            for label, secs, cls, cap in variants:
+                kw = adopted_long_kwargs(P)
+                kw["sector_cap"] = cap
+                bt = dict(sectors=secs, start=start, **kw)
+                if cls is not None:
+                    bt["clusters"] = cls
+                eq, tr = backtest(tickers, P, **bt)
+                row = _after_tax_row(label, eq, tr)
+                if cls is not None:
+                    open_n, max_ind, mix = _open_label_mix(tr, cl_by_t)
+                else:
+                    open_n, max_ind, mix = _open_industry_mix(tr)
+                row.update({
+                    "WindowStart": start,
+                    "sector_cap": cap,
+                    "Open names": open_n,
+                    "Max industry count (open)": max_ind,
+                    "Open industry mix": mix,
+                    "Trades / yr": row.get("Turnover / yr", np.nan),
+                })
+                rows.append(row)
+                print(
+                    f"  [{start}] {label}: CAGR {row['CAGR %']}%  "
+                    f"DD {row['Max DD %']}%  Calmar {row['Calmar']}  "
+                    f"max_ind={max_ind}"
+                )
+    finally:
+        USE_SECTOR_CLUSTERS = prev
+
+    out = pd.DataFrame(rows)
+    path = OUTPUT_STUDIES / "sector_clusters_compare.csv"
+    out.to_csv(path, index=False)
+    print(f"\nWrote {path}")
+
+    def _med(df, strat, col):
+        sub = df[df["Strategy"] == strat]
+        return float(sub[col].median()) if len(sub) else np.nan
+
+    a_cal, b_cal, c_cal = (_med(out, s, "Calmar") for s in (
+        "A baseline industry cap3", "B cluster cap3", "C cluster cap4"))
+    a_cagr, b_cagr, c_cagr = (_med(out, s, "CAGR %") for s in (
+        "A baseline industry cap3", "B cluster cap3", "C cluster cap4"))
+
+    adopt = None
+    if np.isfinite(b_cal) and b_cal >= a_cal and (b_cagr >= a_cagr - 3.0):
+        adopt = "B"
+    elif np.isfinite(c_cal) and c_cal >= a_cal and (c_cagr >= a_cagr - 3.0):
+        adopt = "C"
+    print("\n=== Median across windows ===")
+    print(f"  A Calmar {a_cal:.3f} CAGR {a_cagr:.2f}")
+    print(f"  B Calmar {b_cal:.3f} CAGR {b_cagr:.2f}")
+    print(f"  C Calmar {c_cal:.3f} CAGR {c_cagr:.2f}")
+    if adopt == "B":
+        print("Verdict: ADOPT B (cluster cap 3) — set USE_SECTOR_CLUSTERS=True.")
+    elif adopt == "C":
+        print("Verdict: ADOPT C (cluster cap 4) — set USE_SECTOR_CLUSTERS=True, SECTOR_CAP=4.")
+    else:
+        print("Verdict: KEEP baseline industry cap — set USE_SECTOR_CLUSTERS=False.")
+    return out, adopt
 
 
 def run_atr_exit_study():
@@ -5354,6 +5903,496 @@ def run_atr_exit_study():
     else:
         print("\nNo ATR variant beat baseline Calmar (within CAGR guard). Live book unchanged.")
     return port, best
+
+
+def build_mom_band_panels(P, rank_col="roc126", band_n=30):
+    """Absolute roc rank among tradable names; entry only inside top band_n."""
+    tradable = P["tradable"].astype(bool)
+    mom = P[rank_col].where(tradable)
+    rank_abs = mom.rank(axis=1, ascending=False, method="first")
+    entry = tradable & mom.notna() & (rank_abs <= float(band_n))
+    return rank_abs, entry.fillna(False).astype(bool)
+
+
+def _strategy_study_row(label, eq, tr, start_capital=INITIAL_CAPITAL):
+    eq = eq.dropna()
+    p = perf_stats(eq, label)
+    ts = trade_stats(tr)
+    years = max((eq.index[-1] - eq.index[0]).days / 365.25, 1e-9)
+    closed = tr[tr["reason"] != "open_at_end"] if not tr.empty and "reason" in tr.columns else tr
+    n_closed = int(len(closed))
+    total_ret = (float(eq.iloc[-1]) / float(start_capital) - 1.0) * 100.0
+    row = {
+        "Strategy": label,
+        "Start": str(eq.index[0].date()),
+        "End": str(eq.index[-1].date()),
+        "Total %": round(total_ret, 2),
+        "CAGR %": round(float(p["CAGR %"]), 2),
+        "Max DD %": round(float(p["Max DD %"]), 2),
+        "Sharpe": round(float(p["Sharpe"]), 2) if np.isfinite(p["Sharpe"]) else np.nan,
+        "Calmar": round(float(p["Calmar"]), 2) if np.isfinite(p.get("Calmar", np.nan)) else np.nan,
+        "Final ₹": round(float(p["Final value"]), 0),
+        "Trades": int(ts.get("Trades", len(tr))),
+        "Closed": n_closed,
+        "Win %": round(float(ts.get("Win rate %", np.nan)), 1) if ts else np.nan,
+        "Avg days held": round(float(ts.get("Avg days held", np.nan)), 1) if ts else np.nan,
+        "Turnover / yr": round(n_closed / years, 2),
+    }
+    return row, p, ts
+
+
+# India listed equity (delivery) post-Jul 2024 Budget rates used for study tax drag.
+STCG_RATE = 0.20                # hold <= 12 months
+LTCG_RATE = 0.125               # hold > 12 months
+LTCG_EXEMPT_ANNUAL = 125_000    # ₹1.25L exemption per FY on LTCG (simplified)
+
+
+def trade_tax_stats(tr, stcg_rate=STCG_RATE, ltcg_rate=LTCG_RATE,
+                    ltcg_exempt_annual=LTCG_EXEMPT_ANNUAL, hold_days_lt=365):
+    """Estimate STCG/LTCG tax on trade PnL (gains only; annual LTCG exemption).
+
+    Open-at-end rows are treated as if realized on their exit_date (mark-to-market).
+    Losses do not create a tax credit here (no loss-setoff modelling).
+    """
+    empty = {
+        "ST trades": 0, "LT trades": 0,
+        "ST share %": np.nan, "LT share %": np.nan,
+        "ST gains ₹": 0.0, "LT gains ₹": 0.0,
+        "ST tax ₹": 0.0, "LT tax ₹": 0.0, "Total tax ₹": 0.0,
+        "Tax / gross profit %": np.nan,
+    }
+    if tr is None or len(tr) == 0:
+        return empty
+    t = tr.copy()
+    if "days_held" not in t.columns:
+        t["days_held"] = (pd.to_datetime(t["exit_date"]) - pd.to_datetime(t["entry_date"])).dt.days
+    t["exit_date"] = pd.to_datetime(t["exit_date"])
+    t["is_lt"] = t["days_held"] > hold_days_lt
+    t["gain"] = t["pnl"].clip(lower=0.0)
+    st = t.loc[~t["is_lt"]]
+    lt = t.loc[t["is_lt"]]
+    st_gains = float(st["gain"].sum()) if len(st) else 0.0
+    st_tax = st_gains * float(stcg_rate)
+    # Annual LTCG exemption by exit calendar year
+    lt_tax = 0.0
+    lt_gains = float(lt["gain"].sum()) if len(lt) else 0.0
+    if len(lt):
+        for _, g in lt.groupby(lt["exit_date"].dt.year):
+            taxable = max(float(g["gain"].sum()) - float(ltcg_exempt_annual), 0.0)
+            lt_tax += taxable * float(ltcg_rate)
+    total_tax = st_tax + lt_tax
+    gross = float(t["gain"].sum())
+    n = len(t)
+    return {
+        "ST trades": int((~t["is_lt"]).sum()),
+        "LT trades": int(t["is_lt"].sum()),
+        "ST share %": round(100.0 * (~t["is_lt"]).sum() / n, 1),
+        "LT share %": round(100.0 * t["is_lt"].sum() / n, 1),
+        "ST gains ₹": round(st_gains, 0),
+        "LT gains ₹": round(lt_gains, 0),
+        "ST tax ₹": round(st_tax, 0),
+        "LT tax ₹": round(lt_tax, 0),
+        "Total tax ₹": round(total_tax, 0),
+        "Tax / gross profit %": round(100.0 * total_tax / gross, 2) if gross > 0 else np.nan,
+    }
+
+
+def _after_tax_row(label, eq, tr, start_capital=INITIAL_CAPITAL):
+    row, p, _ = _strategy_study_row(label, eq, tr, start_capital=start_capital)
+    tax = trade_tax_stats(tr)
+    final_pre = float(p["Final value"])
+    final_post = final_pre - float(tax["Total tax ₹"])
+    years = max((eq.dropna().index[-1] - eq.dropna().index[0]).days / 365.25, 1e-9)
+    cagr_post = ((final_post / start_capital) ** (1 / years) - 1.0) * 100.0 if final_post > 0 else np.nan
+    row.update({
+        "ST share %": tax["ST share %"],
+        "LT share %": tax["LT share %"],
+        "ST tax ₹": tax["ST tax ₹"],
+        "LT tax ₹": tax["LT tax ₹"],
+        "Total tax ₹": tax["Total tax ₹"],
+        "Tax / gross profit %": tax["Tax / gross profit %"],
+        "Final after tax ₹": round(final_post, 0),
+        "CAGR after tax %": round(float(cagr_post), 2) if np.isfinite(cagr_post) else np.nan,
+        "CAGR tax drag pts": round(float(row["CAGR %"]) - float(cagr_post), 2)
+        if np.isfinite(cagr_post) else np.nan,
+    })
+    return row
+
+
+def run_top30_band_study(start="2010-01-01", band_n=None, bands=(20, 30, 40, 50)):
+    """Hold 10; sell if abs roc126 rank outside top band. Sweep bands vs live Long + tax drag."""
+    _ensure_output_dirs()
+    pd.set_option("display.width", 260)
+    pd.set_option("display.max_columns", 50)
+    if band_n is not None:
+        bands = (int(band_n),)
+    bands = tuple(int(b) for b in bands)
+
+    data, universe = load_universe()
+    bench, _ = _load_nifty500_close(None)
+    tickers, P = build_panels(data, universe=universe, bench_close=bench)
+    sectors = [load_sectors(tickers).get(t, "") for t in tickers]
+
+    print(f"\n=== Momentum band sweep {list(bands)} vs live Long (from {start}) ===")
+    print(f"Universe: {len(tickers)} names | 10 slots | sector_cap {SECTOR_CAP} | "
+          f"costs {COST_PER_SIDE:.2%}/side")
+    print("Band: tradable only, rank roc126, sell if abs rank > N; no SMA200/peak/index gate")
+    print(f"Tax model: STCG {STCG_RATE:.0%} (≤12m), LTCG {LTCG_RATE:.1%} (>12m), "
+          f"LTCG exempt ₹{LTCG_EXEMPT_ANNUAL:,.0f}/yr; open positions taxed as if sold at end")
+
+    live_kw = dict(adopted_long_kwargs(P), start=start)
+    eq_live, tr_live = backtest(tickers, P, sectors=sectors, **live_kw)
+    rows = [_after_tax_row("Long (live)", eq_live, tr_live)]
+    eq_live.dropna().to_csv(OUTPUT_STUDIES / "mom_band_sweep_2010_equity_live.csv", header=["equity"])
+    tr_live.to_csv(OUTPUT_STUDIES / "mom_band_sweep_2010_trades_live.csv", index=False)
+
+    for n in bands:
+        rank_abs, entry_band = build_mom_band_panels(P, rank_col="roc126", band_n=n)
+        P[f"entry_mom_band_{n}"] = entry_band
+        band_kw = dict(
+            entry_col=f"entry_mom_band_{n}",
+            rank_col="roc126",
+            exit_mode="sma200",
+            size_mode="equal",
+            sector_cap=SECTOR_CAP,
+            max_positions=LONG_POSITIONS,
+            dd_stop=None,
+            sma_exit=False,
+            rank_abs=rank_abs.to_numpy(dtype=float),
+            rank_keep=n,
+            start=start,
+        )
+        eq_b, tr_b = backtest(tickers, P, sectors=sectors, **band_kw)
+        rows.append(_after_tax_row(f"Top-{n} mom band", eq_b, tr_b))
+        eq_b.dropna().to_csv(OUTPUT_STUDIES / f"mom_band_sweep_2010_equity_top{n}.csv", header=["equity"])
+        tr_b.to_csv(OUTPUT_STUDIES / f"mom_band_sweep_2010_trades_top{n}.csv", index=False)
+
+    compare = pd.DataFrame(rows)
+    print("\n--- Pre-tax performance ---")
+    pre_cols = ["Strategy", "CAGR %", "Max DD %", "Sharpe", "Calmar", "Final ₹",
+                "Win %", "Avg days held", "Turnover / yr"]
+    print(compare[pre_cols].to_string(index=False))
+    print("\n--- Tax mix & after-tax ---")
+    tax_cols = ["Strategy", "ST share %", "LT share %", "ST tax ₹", "LT tax ₹",
+                "Total tax ₹", "Tax / gross profit %", "CAGR %", "CAGR after tax %",
+                "CAGR tax drag pts", "Final after tax ₹"]
+    print(compare[tax_cols].to_string(index=False))
+
+    compare_path = OUTPUT_STUDIES / "mom_band_sweep_2010_compare.csv"
+    compare.to_csv(compare_path, index=False)
+
+    # Keep legacy single-band filename when only one band requested
+    if len(bands) == 1:
+        n = bands[0]
+        legacy = compare.iloc[[0, 1]].copy()
+        legacy.to_csv(OUTPUT_STUDIES / f"top{n}_band_vs_live_2010_compare.csv", index=False)
+
+    best_pre = compare.loc[compare["CAGR %"].idxmax(), "Strategy"]
+    best_post = compare.loc[compare["CAGR after tax %"].idxmax(), "Strategy"]
+    print(f"\nVerdict pre-tax CAGR: {best_pre}")
+    print(f"Verdict after-tax CAGR: {best_post}")
+    print(f"Saved {compare_path}")
+
+    cost_df = run_mom_band_cost_stress(
+        tickers, P, sectors, start=start, bands=bands,
+        costs=(0.0, 0.0015, 0.0025, 0.004, 0.005),
+    )
+    slots_df = run_mom_band_slots_sweep(
+        tickers, P, sectors, start=start, bands=bands, slots=(10, 15, 20),
+    )
+    return compare, cost_df, slots_df
+
+
+def run_mom_band_slots_sweep(tickers, P, sectors, start="2010-01-01",
+                             bands=(20, 30, 40, 50), slots=(10, 15, 20)):
+    """Equal-weight book size 10/15/20 for live Long and each momentum band."""
+    _ensure_output_dirs()
+    print(f"\n=== Slots sweep {list(slots)} × bands {list(bands)} (from {start}) ===")
+    print(f"sector_cap={SECTOR_CAP}, cost={COST_PER_SIDE:.2%}/side; live uses adopted gate/exits")
+    rows = []
+
+    for n_pos in slots:
+        live_kw = dict(adopted_long_kwargs(P), start=start, max_positions=n_pos)
+        eq_l, tr_l = backtest(tickers, P, sectors=sectors, **live_kw)
+        row = _after_tax_row(f"Long (live) {n_pos}sl", eq_l, tr_l)
+        row["Slots"] = n_pos
+        row["Band"] = "live"
+        rows.append(row)
+
+        for band_n in bands:
+            rank_abs, entry_band = build_mom_band_panels(P, rank_col="roc126", band_n=band_n)
+            col = f"entry_mom_band_{band_n}"
+            P[col] = entry_band
+            band_kw = dict(
+                entry_col=col,
+                rank_col="roc126",
+                exit_mode="sma200",
+                size_mode="equal",
+                sector_cap=SECTOR_CAP,
+                max_positions=n_pos,
+                dd_stop=None,
+                sma_exit=False,
+                rank_abs=rank_abs.to_numpy(dtype=float),
+                rank_keep=band_n,
+                start=start,
+            )
+            eq_b, tr_b = backtest(tickers, P, sectors=sectors, **band_kw)
+            row = _after_tax_row(f"Top-{band_n} band {n_pos}sl", eq_b, tr_b)
+            row["Slots"] = n_pos
+            row["Band"] = band_n
+            rows.append(row)
+
+    slots_df = pd.DataFrame(rows)
+    print("\n--- Pre-tax by slots × strategy ---")
+    show = slots_df[["Strategy", "Slots", "CAGR %", "Max DD %", "Sharpe", "Calmar",
+                     "Final ₹", "Win %", "Avg days held", "Turnover / yr",
+                     "CAGR after tax %", "CAGR tax drag pts"]]
+    print(show.to_string(index=False))
+
+    print("\n--- CAGR % pivot (rows=strategy family, cols=slots) ---")
+    # Normalize label for pivot: live / Top-N
+    fam = slots_df["Strategy"].str.replace(r" \d+sl$", "", regex=True)
+    piv = pd.DataFrame({"Family": fam, "Slots": slots_df["Slots"], "CAGR %": slots_df["CAGR %"]})
+    print(piv.pivot(index="Family", columns="Slots", values="CAGR %").to_string())
+
+    print("\n--- After-tax CAGR % pivot ---")
+    piv_t = pd.DataFrame({
+        "Family": fam, "Slots": slots_df["Slots"],
+        "CAGR after tax %": slots_df["CAGR after tax %"],
+    })
+    print(piv_t.pivot(index="Family", columns="Slots", values="CAGR after tax %").to_string())
+
+    out = OUTPUT_STUDIES / "mom_band_sweep_2010_slots.csv"
+    slots_df.to_csv(out, index=False)
+    best = slots_df.loc[slots_df["CAGR %"].idxmax()]
+    best_tax = slots_df.loc[slots_df["CAGR after tax %"].idxmax()]
+    print(f"\nBest pre-tax: {best['Strategy']}  CAGR {best['CAGR %']}%  DD {best['Max DD %']}%")
+    print(f"Best after-tax: {best_tax['Strategy']}  CAGR {best_tax['CAGR after tax %']}%")
+    print(f"Saved {out}")
+    return slots_df
+
+
+def run_mom_hybrid_study(start="2010-01-01", band_n=30):
+    """Top-30 mom band + live risk overlays grid; pick Adopt by Calmar with CAGR floor."""
+    _ensure_output_dirs()
+    pd.set_option("display.width", 260)
+    pd.set_option("display.max_columns", 50)
+    data, universe = load_universe()
+    bench, _ = _load_nifty500_close(None)
+    tickers, P = build_panels(data, universe=universe, bench_close=bench)
+    sectors = [load_sectors(tickers).get(t, "") for t in tickers]
+
+    rank_abs, entry_band = build_mom_band_panels(P, rank_col="roc126", band_n=band_n)
+    P["entry_mom_band"] = entry_band
+    rank_abs_np = rank_abs.to_numpy(dtype=float)
+
+    live_full = dict(adopted_long_kwargs(P), start=start)
+    gate = live_full.get("reentry_ok")
+    sleeve = live_full.get("cash_ret")
+
+    def band_base(**extra):
+        kw = dict(
+            entry_col="entry_mom_band",
+            rank_col="roc126",
+            exit_mode="sma200",
+            size_mode="equal",
+            sector_cap=SECTOR_CAP,
+            max_positions=LONG_POSITIONS,
+            dd_stop=None,
+            sma_exit=False,
+            rank_abs=rank_abs_np,
+            rank_keep=band_n,
+            start=start,
+        )
+        kw.update(extra)
+        return kw
+
+    scenarios = [
+        ("A Long (live)", dict(live_full), "benchmark"),
+        ("B Top-30 raw band", band_base(), "benchmark"),
+        # One-change overlays
+        ("1 Top-30 + index gate", band_base(reentry_ok=gate), "one_change"),
+        ("2 Top-30 + SMA200 exit", band_base(sma_exit=True), "one_change"),
+        ("3a Top-30 + peak 30%", band_base(dd_stop=0.30), "one_change"),
+        ("3b Top-30 + peak 25%", band_base(dd_stop=0.25), "one_change"),
+        ("3c Top-30 + peak 20%", band_base(dd_stop=0.20), "one_change"),
+        ("4 Top-30 + equity vol scale", band_base(equity_vol_scale=True), "one_change"),
+        # Stacked hybrids
+        ("5 Top-30 + SMA + peak30 + gate",
+         band_base(sma_exit=True, dd_stop=0.30, reentry_ok=gate), "hybrid"),
+        ("6 Top-30 + SMA + peak25 + gate",
+         band_base(sma_exit=True, dd_stop=0.25, reentry_ok=gate), "hybrid"),
+        ("7 Top-30 + SMA + peak30 + gate + vol",
+         band_base(sma_exit=True, dd_stop=0.30, reentry_ok=gate, equity_vol_scale=True),
+         "hybrid"),
+        ("8 Top-30 + SMA + peak30 + gate + sleeve",
+         band_base(sma_exit=True, dd_stop=0.30, reentry_ok=gate,
+                   cash_ret=sleeve, cash_ret_idle_only=False),
+         "hybrid"),
+    ]
+
+    print(f"\n=== Mom hybrid risk grid (Top-{band_n} band) from {start} ===")
+    print(f"Universe: {len(tickers)} | 10 slots | sector_cap {SECTOR_CAP} | "
+          f"cost {COST_PER_SIDE:.2%}/side")
+    print("Score: max Calmar among rows with CAGR >= live CAGR − 1.0 pt; "
+          "then Sharpe, then shallower DD, then after-tax CAGR")
+
+    rows = []
+    equity_map = {}
+    for label, kw, kind in scenarios:
+        # Drop None overlays so backtest defaults apply cleanly
+        kw = {k: v for k, v in kw.items() if v is not None or k in ("dd_stop",)}
+        if kw.get("dd_stop") is None and "dd_stop" in kw:
+            # explicit None means no peak stop
+            pass
+        eq, tr = backtest(tickers, P, sectors=sectors, **kw)
+        row = _after_tax_row(label, eq, tr)
+        row["Kind"] = kind
+        rows.append(row)
+        equity_map[label] = eq.dropna()
+        print(f"  done: {label}")
+
+    compare = pd.DataFrame(rows)
+    print("\n--- Full grid ---")
+    cols = ["Strategy", "Kind", "CAGR %", "Max DD %", "Sharpe", "Calmar",
+            "Final ₹", "Turnover / yr", "CAGR after tax %", "CAGR tax drag pts"]
+    print(compare[cols].to_string(index=False))
+
+    live_cagr = float(compare.loc[compare["Strategy"] == "A Long (live)", "CAGR %"].iloc[0])
+    floor = live_cagr - 1.0
+    eligible = compare[compare["CAGR %"] >= floor].copy()
+    # Prefer hybrids/one_change over raw band when scores tie; keep live eligible
+    kind_rank = {"hybrid": 0, "one_change": 1, "benchmark": 2}
+    eligible["_kind_rank"] = eligible["Kind"].map(kind_rank).fillna(9)
+    # Max DD % is negative; larger (less negative) is better
+    eligible = eligible.sort_values(
+        by=["Calmar", "Sharpe", "Max DD %", "CAGR after tax %", "_kind_rank"],
+        ascending=[False, False, False, False, True],
+    )
+    adopt = eligible.iloc[0]
+    adopt_label = adopt["Strategy"]
+
+    compare["Adopt"] = compare["Strategy"] == adopt_label
+    out = OUTPUT_STUDIES / "mom_hybrid_2010_compare.csv"
+    compare.drop(columns=["_kind_rank"], errors="ignore").to_csv(out, index=False)
+
+    for label, eq in equity_map.items():
+        safe = label.split(" ", 1)[0].replace("/", "_")
+        # clearer filenames for key legs
+        slug = (
+            "live" if label.startswith("A ") else
+            "raw_band" if label.startswith("B ") else
+            "adopt" if label == adopt_label else
+            label.lower().replace(" ", "_").replace("+", "plus").replace("%", "pct")[:48]
+        )
+        eq.to_csv(OUTPUT_STUDIES / f"mom_hybrid_2010_equity_{slug}.csv", header=["equity"])
+
+    print(f"\nLive CAGR floor: {floor:.2f}% (live {live_cagr:.2f}% − 1.0)")
+    print(f"Eligible configs: {len(eligible)} / {len(compare)}")
+    print(f"\n*** ADOPT: {adopt_label} ***")
+    print(
+        f"  CAGR {adopt['CAGR %']}%  Max DD {adopt['Max DD %']}%  "
+        f"Sharpe {adopt['Sharpe']}  Calmar {adopt['Calmar']}  "
+        f"After-tax CAGR {adopt['CAGR after tax %']}%  "
+        f"Turnover/yr {adopt['Turnover / yr']}"
+    )
+    hybrids = eligible[eligible["Kind"] == "hybrid"]
+    best_hybrid_label = None
+    if len(hybrids):
+        best_hybrid = hybrids.iloc[0]
+        best_hybrid_label = best_hybrid["Strategy"]
+        print(f"\nBest eligible hybrid: {best_hybrid_label}")
+        print(
+            f"  CAGR {best_hybrid['CAGR %']}%  Max DD {best_hybrid['Max DD %']}%  "
+            f"Sharpe {best_hybrid['Sharpe']}  Calmar {best_hybrid['Calmar']}  "
+            f"After-tax CAGR {best_hybrid['CAGR after tax %']}%"
+        )
+    key_labels = ["A Long (live)", "B Top-30 raw band", adopt_label]
+    if best_hybrid_label and best_hybrid_label not in key_labels:
+        key_labels.append(best_hybrid_label)
+    key = compare[compare["Strategy"].isin(key_labels)]
+    print("\n--- Live vs raw Top-30 vs ADOPT vs best hybrid ---")
+    print(key[cols].to_string(index=False))
+    print(f"\nSaved {out}")
+    return compare, adopt_label
+
+
+def run_mom_band_cost_stress(tickers, P, sectors, start="2010-01-01",
+                             bands=(20, 30, 40, 50),
+                             costs=(0.0, 0.0015, 0.0025, 0.004, 0.005)):
+    """CAGR / final wealth vs cost_per_side (brokerage+STT+slippage) for live + bands."""
+    _ensure_output_dirs()
+    print(f"\n=== Cost / slippage stress (cost per side; round-trip ≈ 2×) from {start} ===")
+    print("Baseline live book already uses 0.15%/side. Higher = worse fills / thicker books.")
+    rows = []
+    base_live = dict(adopted_long_kwargs(P), start=start)
+    # baseline CAGR at 0.15% for drag calc
+    base_cagrs = {}
+
+    def _run(label, kw, cps):
+        eq, tr = backtest(tickers, P, sectors=sectors, **{**kw, "cost_per_side": cps})
+        row, p, ts = _strategy_study_row(label, eq, tr)
+        cagr = float(row["CAGR %"])
+        if cps == COST_PER_SIDE:
+            base_cagrs[label] = cagr
+        closed = int(row["Closed"])
+        years = max((eq.dropna().index[-1] - eq.dropna().index[0]).days / 365.25, 1e-9)
+        # Rough ₹ friction: each closed round-trip pays ~2*cps on position notional;
+        # report CAGR drag vs 0.15% baseline when available.
+        return {
+            "Strategy": label,
+            "Cost %/side": round(cps * 100, 2),
+            "Round-trip %": round(cps * 200, 2),
+            "CAGR %": row["CAGR %"],
+            "Max DD %": row["Max DD %"],
+            "Final ₹": row["Final ₹"],
+            "Closed": closed,
+            "Turnover / yr": round(closed / years, 2),
+            "Avg days held": row["Avg days held"],
+        }
+
+    for cps in costs:
+        rows.append(_run("Long (live)", base_live, cps))
+        for n in bands:
+            rank_abs, entry_band = build_mom_band_panels(P, rank_col="roc126", band_n=n)
+            P[f"entry_mom_band_{n}"] = entry_band
+            band_kw = dict(
+                entry_col=f"entry_mom_band_{n}",
+                rank_col="roc126",
+                exit_mode="sma200",
+                size_mode="equal",
+                sector_cap=SECTOR_CAP,
+                max_positions=LONG_POSITIONS,
+                dd_stop=None,
+                sma_exit=False,
+                rank_abs=rank_abs.to_numpy(dtype=float),
+                rank_keep=n,
+                start=start,
+            )
+            rows.append(_run(f"Top-{n} mom band", band_kw, cps))
+
+    cost_df = pd.DataFrame(rows)
+    # Drag vs 0.15%/side baseline
+    drag = []
+    for _, r in cost_df.iterrows():
+        base = base_cagrs.get(r["Strategy"])
+        drag.append(round(base - r["CAGR %"], 2) if base is not None else np.nan)
+    cost_df["CAGR drag vs 0.15% pts"] = drag
+
+    # Pivot-friendly print: CAGR by strategy × cost
+    print("\n--- CAGR % by cost/side ---")
+    piv = cost_df.pivot(index="Strategy", columns="Cost %/side", values="CAGR %")
+    print(piv.to_string())
+    print("\n--- CAGR drag vs 0.15%/side baseline (pts) ---")
+    piv_d = cost_df.pivot(index="Strategy", columns="Cost %/side", values="CAGR drag vs 0.15% pts")
+    print(piv_d.to_string())
+    print("\n--- Detail ---")
+    print(cost_df.to_string(index=False))
+
+    out = OUTPUT_STUDIES / "mom_band_sweep_2010_cost_stress.csv"
+    cost_df.to_csv(out, index=False)
+    print(f"Saved {out}")
+    return cost_df
 
 
 def run_compare_long():
@@ -5444,6 +6483,14 @@ if __name__ == "__main__":
             run_regime_cash_study()
         elif sub in ("us", "us-long", "us-mcap"):
             run_us_long_study()
+        elif sub in ("top30-band", "top30_band", "mom-band", "momentum-band"):
+            run_top30_band_study()
+        elif sub in ("mom-hybrid", "mom_hybrid", "hybrid-band", "top30-hybrid"):
+            run_mom_hybrid_study()
+        elif sub in ("cg-taxonomy", "cg_taxonomy", "sector-taxonomy", "cg-split"):
+            run_cg_taxonomy_study()
+        elif sub in ("sector-clusters", "sector_clusters", "clusters", "risk-clusters"):
+            run_sector_clusters_study()
         else:
             cli_help()
     # Legacy flags (same as above)

@@ -12,9 +12,9 @@ That is why holds are measured in months. There is no 50-day exit and no daily t
 
 ## The stock list
 
-The starting list is the **top 800 NSE names by today’s market cap** among stocks with mcap ≥ ₹2,000 crore (see `LIVE_UNIVERSE_TOP_N` / `MIN_MCAP_CR` in `main.py`). That is a survivorship universe relative to true historical membership. History is downloaded from 2000 (or IPO). Symbols with a remaining one-day move above 60% after Yahoo repair and local spike cleanup are dropped.
+The starting list is the **top 800 NSE names by today’s market cap** among stocks with mcap ≥ ₹2,000 crore (see `LIVE_UNIVERSE_TOP_N` / `MIN_MCAP_CR` in `main.py`). The NSE source list keeps **EQ + BE + BZ** series (`NSE_UNIVERSE_SERIES`) so Trade-for-Trade names (e.g. STLTECH, HFCL, MTARTECH) stay eligible when NSE parks them in BE/BZ. Every `load_universe()` / live / backtest / study run rebuilds that ranking and writes `output/live/universe_top800_by_mcap.csv`. That is a survivorship universe relative to true historical membership. History is downloaded from 2000 (or IPO). Symbols with a remaining one-day move above 60% after Yahoo repair and local spike cleanup are dropped.
 
-Chosen after a multi-start grid (`python main.py study-mcap-grid --from-2000`): top **700–800**, **10** slots, and industry cap **3** were the most stable vs Nifty 500 across eras.
+Chosen after a multi-start grid (`python main.py study-mcap-grid --from-2000`): top **700–800**, **10** slots, and industry caps around **3** were the most stable vs Nifty 500 across eras; live now uses **adaptive** caps (large NSE industries **4**, others **3**).
 
 **Size on the date of the trade.** A stock can be bought on a past date only if an estimate of its market cap that day is at least ₹2,000 crore. The estimate is today’s market cap scaled by the price change since then. It ignores share issues and buybacks, so it is a rough size check, not a real historical market cap.
 
@@ -22,7 +22,9 @@ Chosen after a multi-start grid (`python main.py study-mcap-grid --from-2000`): 
 
 Both the size check and the liquidity check have to pass on the signal day. A name that is too small or too thin that month is skipped even if the chart looks perfect.
 
-Industry labels come from NSE index constituent files (Nifty Total Market and Nifty Microcap 250). Stocks with no label are not subject to the industry cap.
+Industry labels come from NSE index constituent files (Nifty Total Market and Nifty Microcap 250), enriched with Yahoo/business-description fills for names missing from those lists. Each name has **exactly one NSE industry** (no multi-tags in live/backtest). `load_sectors` keeps only the primary tag if a `|` / `+` string appears. Manual singles live in `data_cache/sector_overrides.csv`. Stocks with no label are not subject to the industry cap.
+
+**NSE sector cap (live):** at most **3** open positions per NSE industry (`SECTOR_CAP = 3`, `USE_ADAPTIVE_SECTOR_CAP = False`). Adaptive large=4 / others=3 remains available for studies (`nse_adaptive_sector_cap()`). Uniform 3 preferred after 2015+ rolling and from-2021/2024 windows (adaptive only edged the full from-2010 sample).
 
 ## When it looks
 
@@ -55,7 +57,7 @@ Candidates are sorted by **6-month** price momentum (126 trading days), largest 
 
 A concentrated 10-name book beat 15- and 20-name books on median CAGR and Calmar across the mcap grid (starts 2000→2020). Rank still uses roc126; only the slot count and universe width changed.
 
-**Industry cap.** If a stock has an industry label, it is skipped when that industry already has 3 open positions. Stocks with no label are not capped. The cap is checked against positions that are still held, including ones bought in the same month.
+**Industry cap.** If a stock has an industry label, it is skipped when that industry is already at its cap (4 for large NSE industries, 3 otherwise — see above). Stocks with no label are not capped. The cap is checked against positions that are still held, including ones bought in the same month.
 
 ## How much it buys
 
@@ -115,7 +117,7 @@ Same stocks, same costs, from the start of 2010 through 9 October 2026. Starting
 | Calmar (CAGR ÷ |drawdown|) | **~1.04** | ~0.85 | ~0.26 | ~0.20 |
 | Final from ₹10 lakh | **~₹9.55 cr** | ~₹5.9 cr | ~₹50 lakh | ~₹66 lakh |
 
-The live book is: **top 800** mcap (≥ ₹2,000 cr), **10** names, rank by **6-month return (roc126)**, industry cap **3**, stock SMA200 + 30% peak stop at month-end, **Nifty500 Equal Weight > SMA200 block-new-buys** (CNX500 before ~2024-06), plus the gold/debt cash sleeve above.
+The live book is: **top 800** mcap (≥ ₹2,000 cr), **10** names, rank by **6-month return (roc126)**, NSE industry cap **3**, stock SMA200 + 30% peak stop at month-end, **Nifty500 Equal Weight > SMA200 block-new-buys** (CNX500 before ~2024-06), plus the gold/debt cash sleeve above.
 
 ## What this test cannot prove
 

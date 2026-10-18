@@ -1,3 +1,0 @@
-Strategy,name,start,end,CAGR %,Vol %,Sharpe,Max DD %,Calmar,Final,Total %,Allow new buys %,Trades,Win %,PF,Avg hold days,N500 Total %,N500 Max DD %,Excess CAGR pts,Trough date,Δ Total pts vs Live,Δ MaxDD pts vs Live
-Long (adopted = live),Long (adopted = live),2024-09-26,2026-10-09,34.99,28.98,0.991,-26.93,1.299,1840904.0,84.09,100.0,33,36.4,2.81,199.0,-10.74,-18.84,40.42,2025-04-09,0.0,0.0
-Long + Index>SMA200: block new buys,Long + Index>SMA200: block new buys,2024-09-26,2026-10-09,40.52,27.62,1.175,-26.15,1.549,1997741.0,99.77,62.6,30,46.7,3.52,194.0,-10.74,-18.84,45.95,2025-03-03,15.68,0.78

@@ -1,0 +1,31 @@
+rank,ticker,company,sector,roc126_%,close,in_top10_no_cap,in_adaptive_book
+1,CUPID,Cupid Limited,Fast Moving Consumer Goods,283.6,354.6,True,True
+2,STLTECH,Sterlite Technologies Limited,Telecommunication,280.9,924.65,True,True
+3,CYIENTDLM,Cyient DLM Limited,Capital Goods,227.4,1038.55,True,True
+4,MOREPENLAB,Morepen Laboratories Limited,Healthcare,221.1,128.33,True,True
+5,HFCL,HFCL Limited,Telecommunication,198.7,256.65,True,True
+6,RAYMOND,Raymond Limited,Textiles,198.6,1186.1,True,True
+7,IBULLSLTD,Indiabulls Limited,Financial Services,175.8,37.64,True,True
+8,RPEL,Raghav Productivity Enhancers Limited,Capital Goods,169.7,1865.5,True,True
+9,WELCORP,Welspun Corp Limited,Capital Goods,162.8,2633.8,True,True
+10,FCL,Fineotex Chemical Limited,Chemicals,161.1,59.86,True,True
+11,SKYGOLD,SKY GOLD AND DIAMONDS LIMITED,Consumer Durables,148.4,967.7,False,False
+12,MARINE,Marine Electricals (India) Limited,Capital Goods,145.1,470.2,False,False
+13,IOLCP,IOL Chemicals and Pharmaceuticals Limited,Healthcare,143.3,203.69,False,False
+14,AEGISLOG,Aegis Logistics Limited,Oil Gas & Consumable Fuels,142.3,1489.1,False,False
+15,WHEELS,Wheels India Limited,Automobile and Auto Components,137.1,2409.3,False,False
+16,TFCILTD,Tourism Finance Corporation of India Limited,Financial Services,133.2,160.8,False,False
+17,SBCL,Shivalik Bimetal Controls Limited,Capital Goods,132.4,1127.0,False,False
+18,SHILPAMED,Shilpa Medicare Limited,Healthcare,131.5,962.1,False,False
+19,SOTL,Savita Oil Technologies Limited,Chemicals,125.4,772.55,False,False
+20,DPABHUSHAN,D. P. Abhushan Limited,Consumer Durables,121.2,2437.8,False,False
+21,AVALON,Avalon Technologies Limited,Capital Goods,118.5,2282.5,False,False
+22,RPTECH,Rashi Peripherals Limited,Information Technology,114.5,906.7,False,False
+23,OPTIEMUS,Optiemus Infracom Limited,Information Technology,113.1,794.25,False,False
+24,PAISALO,Paisalo Digital Limited,Financial Services,107.4,81.71,False,False
+25,UNIVCABLES,Universal Cables Limited,Capital Goods,105.1,1580.7,False,False
+26,NRBBEARING,NRB Bearing Limited,Automobile and Auto Components,102.7,513.6,False,False
+27,UNIMECH,Unimech Aerospace and Manufacturing Limited,Capital Goods,98.4,1800.2,False,False
+28,AEROFLEX,Aeroflex Industries Limited,Capital Goods,96.7,568.7,False,False
+29,SYRMA,Syrma SGS Technology Limited,Capital Goods,96.6,1692.2,False,False
+30,RRKABEL,R R Kabel Limited,Capital Goods,95.0,2664.1,False,False

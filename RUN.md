@@ -16,7 +16,9 @@ python main.py live --fresh      # new ₹10L, up to 10 names
 
 Output: **`output/live/long_next_buys.csv`**
 
-Live book defaults: **top 800** by mcap (≥ ₹2,000 cr) · **10 slots** · **sector_cap 3**.
+Live book defaults: **top 800** by mcap (≥ ₹2,000 cr) from NSE **EQ+BE+BZ** · **10 slots** · **NSE sector_cap=3**.
+
+Sector taxonomy: NSE industries only (`USE_ADAPTIVE_SECTOR_CAP = False`, `SECTOR_CAP = 3`). Adaptive large=4 / others=3 kept for studies. Comparisons: `output/studies/nse_cap_from_2015_rolling*.csv`, `cap3_vs_adaptive_from_*.csv`.
 
 ## Data source flags (prices + mcap meta)
 
@@ -46,7 +48,7 @@ python main.py fix-data              # re-apply cleanup on cache (no re-download
 python main.py download-ranks 1 1200 # optional: wider mcap band
 ```
 
-Universe is **top 800 by today’s mcap** among names ≥ ₹2,000 cr (`nse_top_by_mcap.csv` / `universe_meta.csv`). Repair report: `output/studies/nifty500_data_repair_report.csv`.
+Universe is **top 800 by today’s mcap** among names ≥ ₹2,000 cr from EQUITY_L **EQ+BE+BZ** (`output/live/universe_top800_by_mcap.csv`, rebuilt on every `load_universe()`; also `nse_top_by_mcap.csv` / `universe_meta.csv`). Repair report: `output/studies/nifty500_data_repair_report.csv`.
 
 ## Backtest
 

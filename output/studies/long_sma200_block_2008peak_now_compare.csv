@@ -1,3 +1,0 @@
-Strategy,name,start,end,CAGR %,Vol %,Sharpe,Max DD %,Calmar,Final,Total %,Allow new buys %,Trades,Win %,PF,Avg hold days,N500 Total %,N500 Max DD %,Excess CAGR pts,Trough date,Δ Total pts vs Main,Δ MaxDD pts vs Main
-Main (SMA200 block = default),Main (SMA200 block = default),2008-01-04,2026-10-09,33.07,21.11,1.206,-32.37,1.022,212890758.0,21189.08,69.6,161,53.4,7.12,327.0,297.39,-64.26,25.44,2022-06-20,0.0,0.0
-Long ungated (no index buy gate),Long ungated (no index buy gate),2008-01-04,2026-10-09,29.16,21.32,1.053,-28.93,1.008,121702884.0,12070.29,100.0,191,50.3,5.19,319.0,297.39,-64.26,21.53,2020-03-23,-9118.79,3.44

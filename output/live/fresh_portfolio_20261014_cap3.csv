@@ -1,0 +1,11 @@
+rank,ticker,company,sector,roc126_%,close_Oct14,open_Oct15,weight
+1,CUPID,Cupid Limited,Fast Moving Consumer Goods,283.6,354.6,355.0,10%
+2,STLTECH,Sterlite Technologies Limited,Telecommunication,280.9,924.65,878.45,10%
+3,CYIENTDLM,Cyient DLM Limited,Capital Goods,227.4,1038.55,1038.9,10%
+4,MOREPENLAB,Morepen Laboratories Limited,Healthcare,221.1,128.33,128.32,10%
+5,HFCL,HFCL Limited,Telecommunication,198.7,256.65,247.25,10%
+6,RAYMOND,Raymond Limited,Textiles,198.6,1186.1,1186.8,10%
+7,IBULLSLTD,Indiabulls Limited,Financial Services,175.8,37.64,36.88,10%
+8,RPEL,Raghav Productivity Enhancers Limited,Capital Goods,169.7,1865.5,1871.0,10%
+9,WELCORP,Welspun Corp Limited,Capital Goods,162.8,2633.8,2630.1,10%
+10,FCL,Fineotex Chemical Limited,Chemicals,161.1,59.86,59.35,10%

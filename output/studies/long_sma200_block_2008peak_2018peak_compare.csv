@@ -1,3 +1,0 @@
-Strategy,name,start,end,CAGR %,Vol %,Sharpe,Max DD %,Calmar,Final,Total %,Allow new buys %,Trades,Win %,PF,Avg hold days,N500 Total %,N500 Max DD %,Excess CAGR pts,Trough date,Δ Total pts vs Live,Δ MaxDD pts vs Live
-Long (adopted = live),Long (adopted = live),2008-01-04,2018-01-23,22.46,18.16,0.903,-26.5,0.847,7664227.0,666.42,100.0,103,50.5,6.38,306.0,79.5,-64.26,16.47,2008-10-27,0.0,0.0
-Long + Index>SMA200: block new buys,Long + Index>SMA200: block new buys,2008-01-04,2018-01-23,27.93,18.3,1.142,-22.15,1.261,11896810.0,1089.68,65.8,78,60.3,10.31,349.0,79.5,-64.26,21.94,2011-02-09,423.26,4.35
